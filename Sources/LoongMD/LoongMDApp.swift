@@ -1,13 +1,35 @@
 import AppKit
 import SwiftUI
 
+private final class SearchShortcutState: ObservableObject {
+    @Published private(set) var requestSearch = false
+
+    func activate() {
+        requestSearch = true
+    }
+
+    func consume() {
+        requestSearch = false
+    }
+}
+
 @main
 struct LoongMDApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var searchShortcutState = SearchShortcutState()
 
     var body: some Scene {
         WindowGroup("LoongMD") {
             ContentView()
+                .environmentObject(searchShortcutState)
+        }
+        .commands {
+            CommandGroup(after: .textEditing) {
+                Button("查找") {
+                    searchShortcutState.activate()
+                }
+                .keyboardShortcut("f", modifiers: .command)
+            }
         }
     }
 }
@@ -22,6 +44,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private struct ContentView: View {
+    @EnvironmentObject private var searchShortcutState: SearchShortcutState
     @StateObject private var windowStateManager = WindowStateManager()
     private let dataSource = DesktopMarkdownDataSource()
     private let mdFileIcon = Bundle.main.url(forResource: "md_file_icon", withExtension: "png")
@@ -38,8 +61,13 @@ private struct ContentView: View {
     @State private var errorMessage: String?
     @State private var expandedDirectoryIds: [String: Bool] = [:]
     @State private var selectedTreeItemId: String?
+    @State private var isSearchPanelVisible = false
+    @State private var searchKeyword = ""
+    @State private var activeSearchMatchIndex = 0
     @State private var watchTask: Task<Void, Never>?
+    @State private var escapeMonitor: Any?
     @FocusState private var treeFocused: Bool
+    @FocusState private var searchFieldFocused: Bool
 
     private var treeNodes: [TreeNode] {
         buildFileTree(files)
@@ -62,6 +90,61 @@ private struct ContentView: View {
         selectedFile.map { "file:\($0.id)" }
     }
 
+    private var searchableText: String {
+        isEditing ? editingText : markdownText
+    }
+
+    private var normalizedSearchKeyword: String {
+        searchKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var activeSearchKeyword: String {
+        guard isSearchPanelVisible else { return "" }
+        return normalizedSearchKeyword
+    }
+
+    private var searchMatchResults: [SearchMatchLocation] {
+        let keyword = activeSearchKeyword
+        guard !keyword.isEmpty else { return [] }
+        guard !searchableText.isEmpty else { return [] }
+
+        let blocks = parseMarkdown(searchableText)
+        var results: [SearchMatchLocation] = []
+
+        for blockIndex in blocks.indices {
+            let block = blocks[blockIndex]
+            let blockText = searchableText(for: block)
+            let matches = countMatches(in: blockText, keyword: keyword)
+            if matches > 0 {
+                for occurrenceIndex in 0..<matches {
+                    results.append(
+                        SearchMatchLocation(blockIndex: blockIndex, occurrenceIndex: occurrenceIndex)
+                    )
+                }
+            }
+        }
+        return results
+    }
+
+    private var activeSearchMatch: SearchMatchLocation? {
+        guard searchMatchResults.indices.contains(activeSearchMatchIndex) else {
+            return nil
+        }
+        return searchMatchResults[activeSearchMatchIndex]
+    }
+
+    private var searchStatusText: String {
+        guard isSearchPanelVisible else { return "" }
+        if normalizedSearchKeyword.isEmpty {
+            return "输入关键词后开始搜索"
+        }
+        if searchMatchResults.isEmpty {
+            return "未找到 \"\(normalizedSearchKeyword)\""
+        }
+        let current = min(activeSearchMatchIndex, max(0, searchMatchResults.count - 1))
+        return "\(current + 1)/\(searchMatchResults.count)"
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             fileSidebar
@@ -78,10 +161,43 @@ private struct ContentView: View {
                 await bootstrap()
                 startFileWatcher()
             }
+            if escapeMonitor == nil {
+                escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    if isSearchPanelVisible && event.keyCode == 53 {
+                        hideSearchPanel()
+                        return nil
+                    }
+                    return event
+                }
+            }
         }
         .onDisappear {
             watchTask?.cancel()
             watchTask = nil
+            if let escapeMonitor {
+                NSEvent.removeMonitor(escapeMonitor)
+                self.escapeMonitor = nil
+            }
+        }
+        .onChange(of: searchShortcutState.requestSearch) { shouldOpen in
+            guard shouldOpen else { return }
+            searchShortcutState.consume()
+            openSearchPanel()
+        }
+        .onChange(of: searchKeyword) { _ in
+            activeSearchMatchIndex = 0
+        }
+        .onChange(of: searchMatchResults.count) { count in
+            if count == 0 {
+                activeSearchMatchIndex = 0
+            } else if activeSearchMatchIndex >= count {
+                activeSearchMatchIndex = 0
+            }
+        }
+        .onChange(of: selectedFile?.id) { id in
+            if id == nil {
+                hideSearchPanel()
+            }
         }
         .onChange(of: files) { newFiles in
             updateTreeExpansion()
@@ -211,21 +327,31 @@ private struct ContentView: View {
             }
 
             Divider()
+            if isSearchPanelVisible && selectedFile != nil {
+                searchPanel
+            }
 
             if let file = selectedFile {
                 if isEditing {
-                    TextEditor(text: $editingText)
-                        .font(.system(size: 14))
-                        .textSelection(.enabled)
-                        .onChange(of: editingText) { next in
-                            hasUnsavedChanges = next != markdownText
-                        }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color(NSColor.separatorColor), lineWidth: 1)
-                        )
+                    SearchableTextEditor(
+                        text: $editingText,
+                        searchText: activeSearchKeyword,
+                        activeMatchIndex: searchMatchResults.isEmpty ? nil : activeSearchMatchIndex
+                    )
+                    .onChange(of: editingText) { next in
+                        hasUnsavedChanges = next != markdownText
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                    )
                 } else {
-                    MarkdownRenderView(markdownText: markdownText, markdownFilePath: file.path)
+                    MarkdownRenderView(
+                        markdownText: markdownText,
+                        markdownFilePath: file.path,
+                        searchText: activeSearchKeyword,
+                        activeSearchMatch: activeSearchMatch
+                    )
                 }
             } else {
                 Text("请在左侧选择一个 Markdown 文件")
@@ -235,6 +361,50 @@ private struct ContentView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var searchPanel: some View {
+        HStack(spacing: 8) {
+            TextField("搜索关键词（Command+F）", text: $searchKeyword)
+                .textFieldStyle(.roundedBorder)
+                .focused($searchFieldFocused)
+                .onSubmit {
+                    goToNextSearchMatch()
+                }
+
+            Text(searchStatusText)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 110, alignment: .leading)
+                .padding(.leading, 4)
+
+            Spacer(minLength: 8)
+
+            Button("上一个") {
+                goToPreviousSearchMatch()
+            }
+            .keyboardShortcut(.upArrow, modifiers: .command)
+            .disabled(searchMatchResults.isEmpty)
+
+            Button("下一个") {
+                goToNextSearchMatch()
+            }
+            .keyboardShortcut(.downArrow, modifiers: .command)
+            .disabled(searchMatchResults.isEmpty)
+
+            Button("关闭") {
+                hideSearchPanel()
+            }
+        }
+                        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.textBackgroundColor).opacity(0.95))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(NSColor.separatorColor).opacity(0.5))
+        )
     }
 
     @ViewBuilder
@@ -453,6 +623,72 @@ private struct ContentView: View {
         }
     }
 
+    private func searchableText(for block: MdBlock) -> String {
+        switch block {
+        case .heading(_, let text):
+            return text
+        case .paragraph(let text):
+            return text
+        case .image(let alt, let source, _, _):
+            return [alt, source].joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        case .tableRow(let cells):
+            return cells.joined(separator: " ")
+        case .unorderedList(let items), .orderedList(let items):
+            return items.map(\.text).joined(separator: " ")
+        case .quote(let text):
+            return text
+        case .codeFence(_, let text):
+            return text
+        case .horizontalRule:
+            return ""
+        }
+    }
+
+    private func countMatches(in text: String, keyword: String) -> Int {
+        let query = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return 0 }
+
+        var count = 0
+        var searchStart = text.startIndex
+        while let found = text.range(of: query, options: .caseInsensitive, range: searchStart..<text.endIndex) {
+            count += 1
+            searchStart = found.upperBound
+        }
+        return count
+    }
+
+    private func openSearchPanel() {
+        guard selectedFile != nil else {
+            errorMessage = "请先选择一个 Markdown 文件"
+            return
+        }
+        isSearchPanelVisible = true
+        DispatchQueue.main.async {
+            searchFieldFocused = true
+        }
+    }
+
+    private func hideSearchPanel() {
+        isSearchPanelVisible = false
+        searchFieldFocused = false
+    }
+
+    private func goToNextSearchMatch() {
+        guard !searchMatchResults.isEmpty else { return }
+        activeSearchMatchIndex += 1
+        if activeSearchMatchIndex >= searchMatchResults.count {
+            activeSearchMatchIndex = 0
+        }
+    }
+
+    private func goToPreviousSearchMatch() {
+        guard !searchMatchResults.isEmpty else { return }
+        activeSearchMatchIndex -= 1
+        if activeSearchMatchIndex < 0 {
+            activeSearchMatchIndex = searchMatchResults.count - 1
+        }
+    }
+
     private func selectFile(_ file: MarkdownFile) {
         if let current = selectedFile,
            current.id != file.id,
@@ -503,6 +739,137 @@ private struct ContentView: View {
                 if Task.isCancelled { break }
                 await reloadFiles(preferredSelectedId: selectedFile?.id)
             }
+        }
+    }
+}
+
+private struct SearchableTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    let searchText: String
+    let activeMatchIndex: Int?
+    private let fontSize: CGFloat = 14
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let textView = NSTextView()
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.font = NSFont.systemFont(ofSize: fontSize)
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.textContainer?.lineFragmentPadding = 8
+        textView.textContainerInset = NSSize(width: 6, height: 8)
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.delegate = context.coordinator
+        textView.drawsBackground = false
+        textView.backgroundColor = NSColor.textBackgroundColor
+        textView.string = text
+
+        context.coordinator.refreshHighlights(for: textView, activeMatchIndex: activeMatchIndex)
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = textView
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        if let container = textView.textContainer {
+            container.widthTracksTextView = true
+            container.heightTracksTextView = false
+        }
+
+        return scrollView
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? NSTextView else { return }
+        context.coordinator.parent = self
+
+        let selectedRange = textView.selectedRange()
+        let fullText = textView.string
+        if fullText != text {
+            textView.string = text
+        }
+        context.coordinator.refreshHighlights(for: textView, activeMatchIndex: activeMatchIndex)
+
+        let maxLength = max(0, text.utf16.count)
+        let adjustedLocation = min(selectedRange.location, maxLength)
+        let adjustedLength = min(selectedRange.length, maxLength - adjustedLocation)
+        textView.setSelectedRange(NSRange(location: adjustedLocation, length: adjustedLength))
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: SearchableTextEditor
+
+        init(_ parent: SearchableTextEditor) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+            refreshHighlights(for: textView, activeMatchIndex: parent.activeMatchIndex)
+        }
+
+        func refreshHighlights(for textView: NSTextView, activeMatchIndex: Int?) {
+            guard let storage = textView.textStorage else { return }
+            let fullRange = NSRange(location: 0, length: storage.length)
+
+            storage.beginEditing()
+            storage.setAttributes(
+                [
+                    .font: NSFont.systemFont(ofSize: parent.fontSize),
+                    .foregroundColor: NSColor.labelColor,
+                    .backgroundColor: NSColor.clear
+                ],
+                range: fullRange
+            )
+
+            let query = parent.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if query.isEmpty {
+                storage.endEditing()
+                return
+            }
+
+            let fullText = storage.string as NSString
+            var searchRange = NSRange(location: 0, length: fullText.length)
+            var matchIndex = 0
+            var activeMatchRange: NSRange?
+
+            while searchRange.location < fullText.length {
+                let found = fullText.range(of: query, options: .caseInsensitive, range: searchRange)
+                if found.location == NSNotFound { break }
+
+                let matchColor = (matchIndex == activeMatchIndex) ? NSColor.orange.withAlphaComponent(0.45) : NSColor.yellow.withAlphaComponent(0.45)
+                storage.addAttribute(.backgroundColor, value: matchColor, range: found)
+
+                if matchIndex == activeMatchIndex {
+                    activeMatchRange = found
+                }
+
+                let nextLocation = found.location + found.length
+                if nextLocation >= fullText.length { break }
+                searchRange = NSRange(location: nextLocation, length: fullText.length - nextLocation)
+                matchIndex += 1
+            }
+
+            if let activeMatchRange {
+                textView.scrollRangeToVisible(activeMatchRange)
+            }
+            storage.endEditing()
         }
     }
 }

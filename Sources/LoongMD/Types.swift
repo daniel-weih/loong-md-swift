@@ -53,6 +53,11 @@ struct TreeDirectory: Hashable {
     let files: [MarkdownFile]
 }
 
+struct SearchMatchLocation: Equatable {
+    let blockIndex: Int
+    let occurrenceIndex: Int
+}
+
 enum TreeNode: Hashable {
     case directory(TreeDirectory)
     case file(MarkdownFile)

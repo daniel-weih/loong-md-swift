@@ -34,7 +34,6 @@ mkdir -p "${DIST_DIR}"
 mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Resources"
 cp -f "${BUILD_DIR}/${APP_NAME}" "${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
 
-if [ ! -f "${APP_BUNDLE}/Contents/Info.plist" ]; then
 cat > "${APP_BUNDLE}/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -55,6 +54,8 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'EOF'
   <string>APPL</string>
   <key>CFBundleVersion</key>
   <string>1.0</string>
+  <key>CFBundleIconFile</key>
+  <string>LoongMD.icns</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSPrincipalClass</key>
@@ -66,7 +67,6 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<'EOF'
 </dict>
 </plist>
 EOF
-fi
 
 cp -f "${RES_DIR}/app_icon.png" "${APP_BUNDLE}/Contents/Resources/app_icon.png"
 cp -f "${RES_DIR}/md_file_icon.png" "${APP_BUNDLE}/Contents/Resources/md_file_icon.png"
