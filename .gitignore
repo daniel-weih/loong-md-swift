@@ -1,0 +1,8 @@
+/.build/
+/dist/
+/Packages/
+*.swp
+*.swo
+*.xcuserstate
+*.DS_Store
+.DS_Store
