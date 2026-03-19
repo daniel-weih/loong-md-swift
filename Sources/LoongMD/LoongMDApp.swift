@@ -223,14 +223,12 @@ private struct ContentView: View {
 
     private var fileSidebar: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Markdown 文件")
-                .font(.system(size: 22, weight: .semibold))
+            HStack(spacing: 10) {
+                Text("Markdown 文件")
+                    .font(.system(size: 22, weight: .semibold))
 
-            Text(dataSource.rootDescription)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                Spacer()
 
-            HStack {
                 if dataSource.canSelectRoot {
                     Button("选择目录") {
                         Task {
@@ -241,16 +239,13 @@ private struct ContentView: View {
                             }
                         }
                     }
+                    .help("选择工作目录")
                 }
-
-                Button("刷新") {
-                    Task {
-                        await reloadFiles(preferredSelectedId: selectedFile?.id)
-                    }
-                }
-
-                Spacer()
             }
+
+            Text(dataSource.rootDescription)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
 
             if loading { ProgressView() }
 
