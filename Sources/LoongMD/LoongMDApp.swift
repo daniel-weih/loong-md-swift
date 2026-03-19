@@ -268,16 +268,18 @@ private struct ContentView: View {
                     }
                 }
             }
-            .focusable()
-            .focused($treeFocused)
+            .background(
+                TreeFocusCaptureView(isActive: treeFocused && !searchFieldFocused) { direction in
+                    moveTreeSelection(direction)
+                }
+                .allowsHitTesting(false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            )
             .onAppear {
                 treeFocused = true
             }
             .onTapGesture {
                 treeFocused = true
-            }
-            .onMoveCommand { direction in
-                moveTreeSelection(direction)
             }
         }
         .padding(12)
@@ -440,29 +442,28 @@ private struct ContentView: View {
             }
 
         case let .file(id: id, depth: depth, file: file):
-            Button(action: {
+            HStack(spacing: 6) {
+                Spacer().frame(width: CGFloat(depth) * 14)
+
+                if let icon = mdFileIcon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 14, height: 14)
+                } else {
+                    Image(systemName: "doc.plaintext")
+                }
+
+                Text(file.name)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
                 selectFile(file)
                 treeFocused = true
-            }) {
-                HStack(spacing: 6) {
-                    Spacer().frame(width: CGFloat(depth) * 14)
-
-                    if let icon = mdFileIcon {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .frame(width: 14, height: 14)
-                    } else {
-                        Image(systemName: "doc.plaintext")
-                    }
-
-                    Text(file.name)
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-
-                    Spacer(minLength: 0)
-                }
             }
-            .buttonStyle(.plain)
             .padding(.vertical, 2)
             .background((selectedTreeItemId == id ? Color.accentColor.opacity(0.16) : Color.clear))
             .contextMenu {
@@ -509,6 +510,48 @@ private struct ContentView: View {
 
         guard nextIndex >= 0, nextIndex < visibleFileItems.count else { return }
         selectFile(visibleFileItems[nextIndex].file)
+    }
+
+    private struct TreeFocusCaptureView: NSViewRepresentable {
+        let isActive: Bool
+        let onMove: (MoveCommandDirection) -> Void
+
+        func makeNSView(context: Context) -> FocusCaptureView {
+            let view = FocusCaptureView()
+            view.onMove = onMove
+            view.focusRingType = .none
+            return view
+        }
+
+        func updateNSView(_ nsView: FocusCaptureView, context: Context) {
+            nsView.onMove = onMove
+
+            guard isActive, let window = nsView.window else { return }
+            window.makeFirstResponder(nsView)
+        }
+
+        final class FocusCaptureView: NSView {
+            var onMove: ((MoveCommandDirection) -> Void)?
+
+            override var acceptsFirstResponder: Bool {
+                true
+            }
+
+            override var canBecomeKeyView: Bool {
+                true
+            }
+
+            override func keyDown(with event: NSEvent) {
+                switch event.keyCode {
+                case 126:
+                    onMove?(.up)
+                case 125:
+                    onMove?(.down)
+                default:
+                    super.keyDown(with: event)
+                }
+            }
+        }
     }
 
     private func updateTreeExpansion() {
