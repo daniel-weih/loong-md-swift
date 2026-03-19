@@ -54,7 +54,7 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         if paragraphBuffer.isEmpty {
             return
         }
-        blocks.append(.paragraph(paragraphBuffer.joined(separator: "\\n").trimmingCharacters(in: .whitespacesAndNewlines)))
+        blocks.append(.paragraph(paragraphBuffer.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)))
         paragraphBuffer.removeAll(keepingCapacity: false)
     }
 
@@ -62,7 +62,7 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         if quoteBuffer.isEmpty {
             return
         }
-        blocks.append(.quote(quoteBuffer.joined(separator: "\\n").trimmingCharacters(in: .whitespacesAndNewlines)))
+        blocks.append(.quote(quoteBuffer.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)))
         quoteBuffer.removeAll(keepingCapacity: false)
     }
 
@@ -92,7 +92,7 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
             codeLanguage = nil
             return
         }
-        blocks.append(.codeFence(language: codeLanguage, text: codeBuffer.joined(separator: "\\n")))
+        blocks.append(.codeFence(language: codeLanguage, text: codeBuffer.joined(separator: "\n")))
         codeBuffer.removeAll(keepingCapacity: false)
         codeLanguage = nil
     }
@@ -218,7 +218,7 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
             let continuation = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if !continuation.isEmpty, !listBuffer.isEmpty {
                 let last = listBuffer.count - 1
-                listBuffer[last].text += "\\n" + continuation
+                listBuffer[last].text += "\n" + continuation
                 continue
             }
         }

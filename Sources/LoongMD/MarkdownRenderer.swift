@@ -269,6 +269,7 @@ private struct MarkdownInlineText: View {
 
     var body: some View {
         let spans = parseInline(text)
+        let normalizedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchableSpans = {
             var offset = initialMatchOffset
             var items: [(MdInlineSpan, [SearchSegment])] = []
@@ -283,32 +284,66 @@ private struct MarkdownInlineText: View {
             return items
         }()
 
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            ForEach(Array(searchableSpans.enumerated()), id: \.offset) { _, item in
-                let span = item.0
-                let segments = item.1
-                if let link = span.style.link {
-                    Button(action: { onOpenURL(link) }) {
-                        SearchableInlineText(
-                            span: span,
-                            isLink: true,
-                            blockIndex: blockIndex,
-                            activeSearchMatch: activeSearchMatch,
-                            segments: segments
-                        )
+        Group {
+            if normalizedSearchText.isEmpty && spans.allSatisfy({ $0.style.link == nil }) {
+                mergedInlineText(spans)
+                    .textSelection(.enabled)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    ForEach(Array(searchableSpans.enumerated()), id: \.offset) { _, item in
+                        let span = item.0
+                        let segments = item.1
+                        if let link = span.style.link {
+                            Button(action: { onOpenURL(link) }) {
+                                SearchableInlineText(
+                                    span: span,
+                                    isLink: true,
+                                    blockIndex: blockIndex,
+                                    activeSearchMatch: activeSearchMatch,
+                                    segments: segments
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            SearchableInlineText(
+                                span: span,
+                                isLink: false,
+                                blockIndex: blockIndex,
+                                activeSearchMatch: activeSearchMatch,
+                                segments: segments
+                            )
+                        }
                     }
-                    .buttonStyle(.plain)
-                } else {
-                    SearchableInlineText(
-                        span: span,
-                        isLink: false,
-                        blockIndex: blockIndex,
-                        activeSearchMatch: activeSearchMatch,
-                        segments: segments
-                    )
                 }
             }
         }
+    }
+
+    private func mergedInlineText(_ spans: [MdInlineSpan]) -> Text {
+        spans.reduce(Text(""), { partial, span in
+            partial + styledText(span)
+        })
+    }
+
+    private func styledText(_ span: MdInlineSpan) -> Text {
+        var piece = Text(span.text)
+
+        if span.style.bold {
+            piece = piece.bold()
+        }
+        if span.style.italic {
+            piece = piece.italic()
+        }
+        if span.style.strikethrough {
+            piece = piece.strikethrough()
+        }
+        if span.style.code {
+            piece = piece
+                .font(.system(.body, design: .monospaced))
+                .foregroundColor(Color(red: 0.50, green: 0.11, blue: 0.11))
+        }
+
+        return piece
     }
 }
 
