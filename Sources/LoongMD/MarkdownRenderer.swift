@@ -670,9 +670,9 @@ private struct MarkdownList: View {
                 let prefix = rendered.prefix
                 let startOffset = rendered.startOffset
 
-                HStack(alignment: .top, spacing: 8) {
+                HStack(alignment: .top, spacing: 4) {
                     Text(prefix)
-                        .frame(width: 28, alignment: .leading)
+                        .frame(width: markerWidth(for: prefix), alignment: .leading)
                         .foregroundColor(.secondary)
 
                     MarkdownInlineText(
@@ -721,6 +721,21 @@ private struct MarkdownList: View {
 
             return (UUID(), item, prefix)
         }
+    }
+
+    private func markerWidth(for prefix: String) -> CGFloat {
+        if ordered {
+            switch prefix.count {
+            case 0...2:
+                return 12
+            case 3:
+                return 18
+            default:
+                return 24
+            }
+        }
+
+        return 6
     }
 }
 
