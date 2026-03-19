@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+private enum SidebarPrefs {
+    static let fileSortOptionKey = "com.loongmd.fileSortOption"
+}
+
 private final class SearchShortcutState: ObservableObject {
     @Published private(set) var requestSearch = false
 
@@ -47,6 +51,8 @@ private struct ContentView: View {
     @EnvironmentObject private var searchShortcutState: SearchShortcutState
     @StateObject private var windowStateManager = WindowStateManager()
     private let dataSource = DesktopMarkdownDataSource()
+    private let appLogo = Bundle.main.url(forResource: "app_icon", withExtension: "png")
+        .flatMap { NSImage(contentsOf: $0) }
     private let mdFileIcon = Bundle.main.url(forResource: "md_file_icon", withExtension: "png")
         .flatMap { NSImage(contentsOf: $0) }
 
@@ -64,13 +70,14 @@ private struct ContentView: View {
     @State private var isSearchPanelVisible = false
     @State private var searchKeyword = ""
     @State private var activeSearchMatchIndex = 0
+    @State private var fileSortOption = ContentView.loadSavedFileSortOption()
     @State private var watchTask: Task<Void, Never>?
     @State private var escapeMonitor: Any?
     @FocusState private var treeFocused: Bool
     @FocusState private var searchFieldFocused: Bool
 
     private var treeNodes: [TreeNode] {
-        buildFileTree(files)
+        buildFileTree(files, sortOption: fileSortOption)
     }
 
     private var visibleItems: [TreeListItem] {
@@ -199,6 +206,9 @@ private struct ContentView: View {
                 hideSearchPanel()
             }
         }
+        .onChange(of: fileSortOption) { next in
+            UserDefaults.standard.set(next.rawValue, forKey: SidebarPrefs.fileSortOptionKey)
+        }
         .onChange(of: files) { newFiles in
             updateTreeExpansion()
 
@@ -224,8 +234,16 @@ private struct ContentView: View {
     private var fileSidebar: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Text("Markdown 文件")
-                    .font(.system(size: 22, weight: .semibold))
+                if let appLogo {
+                    Image(nsImage: appLogo)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(height: 30)
+                        .accessibilityLabel("LoongMD")
+                } else {
+                    Text("LoongMD")
+                        .font(.system(size: 22, weight: .semibold))
+                }
 
                 Spacer()
 
@@ -241,6 +259,23 @@ private struct ContentView: View {
                     }
                     .help("选择工作目录")
                 }
+
+                Menu {
+                    ForEach(FileSortOption.allCases) { option in
+                        Button {
+                            fileSortOption = option
+                        } label: {
+                            if option == fileSortOption {
+                                Label(option.title, systemImage: "checkmark")
+                            } else {
+                                Text(option.title)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("排序", systemImage: "arrow.up.arrow.down")
+                }
+                .help("当前排序: \(fileSortOption.shortTitle)")
             }
 
             Text(dataSource.rootDescription)
@@ -358,6 +393,14 @@ private struct ContentView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private static func loadSavedFileSortOption() -> FileSortOption {
+        guard let raw = UserDefaults.standard.string(forKey: SidebarPrefs.fileSortOptionKey),
+              let option = FileSortOption(rawValue: raw) else {
+            return .modifiedNewest
+        }
+        return option
     }
 
     private var searchPanel: some View {

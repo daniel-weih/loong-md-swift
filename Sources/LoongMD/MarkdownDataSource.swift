@@ -155,7 +155,7 @@ final class DesktopMarkdownDataSource: MarkdownDataSource {
     private func enumerateMarkdownFiles(in directory: URL) throws -> [MarkdownFile] {
         guard let enumerator = fileManager.enumerator(
             at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .creationDateKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
             return []
@@ -167,7 +167,7 @@ final class DesktopMarkdownDataSource: MarkdownDataSource {
             guard let url = element as? URL else { continue }
             guard url.pathExtension.lowercased() == "md" else { continue }
 
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .creationDateKey, .contentModificationDateKey])
             guard values.isRegularFile == true else { continue }
 
             let relativePath = url.path
@@ -181,6 +181,7 @@ final class DesktopMarkdownDataSource: MarkdownDataSource {
                     name: url.lastPathComponent,
                     path: url.path,
                     relativePath: relativePath,
+                    createdAt: values.creationDate ?? values.contentModificationDate ?? Date.distantPast,
                     lastModified: values.contentModificationDate ?? Date.distantPast
                 )
             )

@@ -1,13 +1,6 @@
 import Foundation
 
-private let markdownTreeFileComparator: (MarkdownFile, MarkdownFile) -> Bool = { lhs, rhs in
-    if lhs.lastModified != rhs.lastModified {
-        return lhs.lastModified > rhs.lastModified
-    }
-    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-}
-
-func buildFileTree(_ files: [MarkdownFile]) -> [TreeNode] {
+func buildFileTree(_ files: [MarkdownFile], sortOption: FileSortOption) -> [TreeNode] {
     let root = MutableDirectoryNode(id: "__root__", name: "")
 
     for file in files {
@@ -36,25 +29,65 @@ func buildFileTree(_ files: [MarkdownFile]) -> [TreeNode] {
         current.files.append(file)
     }
 
-    let directories = buildDirectories(from: root)
+    let directories = buildDirectories(from: root, sortOption: sortOption)
     let rootFiles = root.files
-        .sorted(by: markdownTreeFileComparator)
+        .sorted(by: fileComparator(for: sortOption))
         .map { TreeNode.file($0) }
 
     return directories.map(TreeNode.directory) + rootFiles
 }
 
-private func buildDirectories(from node: MutableDirectoryNode) -> [TreeDirectory] {
+private func buildDirectories(from node: MutableDirectoryNode, sortOption: FileSortOption) -> [TreeDirectory] {
     return node.children.values
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         .map { child in
             TreeDirectory(
                 id: child.id,
                 name: child.name,
-                directories: buildDirectories(from: child),
-                files: child.files.sorted(by: markdownTreeFileComparator)
+                directories: buildDirectories(from: child, sortOption: sortOption),
+                files: child.files.sorted(by: fileComparator(for: sortOption))
             )
         }
+}
+
+private func fileComparator(for sortOption: FileSortOption) -> (MarkdownFile, MarkdownFile) -> Bool {
+    { lhs, rhs in
+        switch sortOption {
+        case .nameAscending:
+            return compareNames(lhs, rhs, ascending: true)
+        case .nameDescending:
+            return compareNames(lhs, rhs, ascending: false)
+        case .modifiedNewest:
+            return compareDates(lhs.lastModified, rhs.lastModified, lhs: lhs, rhs: rhs, newestFirst: true)
+        case .modifiedOldest:
+            return compareDates(lhs.lastModified, rhs.lastModified, lhs: lhs, rhs: rhs, newestFirst: false)
+        case .createdNewest:
+            return compareDates(lhs.createdAt, rhs.createdAt, lhs: lhs, rhs: rhs, newestFirst: true)
+        case .createdOldest:
+            return compareDates(lhs.createdAt, rhs.createdAt, lhs: lhs, rhs: rhs, newestFirst: false)
+        }
+    }
+}
+
+private func compareNames(_ lhs: MarkdownFile, _ rhs: MarkdownFile, ascending: Bool) -> Bool {
+    let result = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+    if result == .orderedSame {
+        return lhs.relativePath.localizedCaseInsensitiveCompare(rhs.relativePath) == .orderedAscending
+    }
+    return ascending ? result == .orderedAscending : result == .orderedDescending
+}
+
+private func compareDates(
+    _ lhsDate: Date,
+    _ rhsDate: Date,
+    lhs: MarkdownFile,
+    rhs: MarkdownFile,
+    newestFirst: Bool
+) -> Bool {
+    if lhsDate != rhsDate {
+        return newestFirst ? lhsDate > rhsDate : lhsDate < rhsDate
+    }
+    return compareNames(lhs, rhs, ascending: true)
 }
 
 func collectDirectoryIds(_ nodes: [TreeNode]) -> [String] {

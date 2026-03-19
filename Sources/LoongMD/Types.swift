@@ -5,9 +5,55 @@ struct MarkdownFile: Identifiable, Hashable {
     let name: String
     let path: String
     let relativePath: String
+    let createdAt: Date
     let lastModified: Date
 
     var url: URL { URL(fileURLWithPath: path) }
+}
+
+enum FileSortOption: String, CaseIterable, Identifiable {
+    case nameAscending
+    case nameDescending
+    case modifiedNewest
+    case modifiedOldest
+    case createdNewest
+    case createdOldest
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .nameAscending:
+            return "名称 A-Z"
+        case .nameDescending:
+            return "名称 Z-A"
+        case .modifiedNewest:
+            return "修改时间 新到旧"
+        case .modifiedOldest:
+            return "修改时间 旧到新"
+        case .createdNewest:
+            return "创建时间 新到旧"
+        case .createdOldest:
+            return "创建时间 旧到新"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .nameAscending:
+            return "名称"
+        case .nameDescending:
+            return "名称倒序"
+        case .modifiedNewest:
+            return "最近修改"
+        case .modifiedOldest:
+            return "最早修改"
+        case .createdNewest:
+            return "最近创建"
+        case .createdOldest:
+            return "最早创建"
+        }
+    }
 }
 
 enum MarkdownTreeTarget: Hashable {
