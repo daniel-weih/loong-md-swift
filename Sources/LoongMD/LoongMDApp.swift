@@ -77,7 +77,6 @@ private struct ContentView: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var watchTask: Task<Void, Never>?
     @State private var escapeMonitor: Any?
-    @FocusState private var treeFocused: Bool
     @FocusState private var searchFieldFocused: Bool
 
     private var treeNodes: [TreeNode] {
@@ -218,6 +217,13 @@ private struct ContentView: View {
         .onChange(of: fileSortOption) { next in
             UserDefaults.standard.set(next.rawValue, forKey: SidebarPrefs.fileSortOptionKey)
         }
+        .onChange(of: selectedTreeItemId) { id in
+            guard let id else { return }
+            guard let item = visibleItems.first(where: { $0.id == id }) else { return }
+            guard case let .file(_, _, file) = item else { return }
+            guard selectedFile?.id != file.id else { return }
+            selectFile(file)
+        }
         .onChange(of: files) { newFiles in
             updateTreeExpansion()
 
@@ -338,26 +344,19 @@ private struct ContentView: View {
                     .lineLimit(2)
             }
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(visibleItems, id: \.id) { item in
-                        treeRow(for: item)
-                    }
+            List(selection: $selectedTreeItemId) {
+                ForEach(visibleItems, id: \.id) { item in
+                    treeRow(for: item)
+                        .tag(item.id)
+                        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                        .listRowSeparator(.hidden)
                 }
             }
-            .background(
-                TreeFocusCaptureView(isActive: treeFocused && !searchFieldFocused) { direction in
-                    moveTreeSelection(direction)
-                }
-                .allowsHitTesting(false)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            )
-            .onAppear {
-                treeFocused = true
-            }
-            .onTapGesture {
-                treeFocused = true
-            }
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: .textBackgroundColor))
+            .environment(\.defaultMinListRowHeight, 22)
+            .listStyle(.plain)
+            .onMoveCommand(perform: moveTreeSelection)
         }
         .padding(12)
     }
@@ -516,24 +515,20 @@ private struct ContentView: View {
     private func treeRow(for item: TreeListItem) -> some View {
         switch item {
         case let .directory(id: id, name: name, depth: depth, expanded: expanded):
-            HStack(spacing: 6) {
-                Spacer().frame(width: CGFloat(depth) * 14)
+            HStack(spacing: 5) {
+                Spacer().frame(width: CGFloat(depth) * 12)
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.secondary)
                 Image(systemName: expanded ? "folder.open" : "folder")
                     .foregroundStyle(.orange)
                 Text(name)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, 1)
             .contentShape(Rectangle())
-            .background(
-                (selectedTreeItemId == id ? Color.accentColor.opacity(0.16) : Color.clear)
-            )
             .onTapGesture {
-                treeFocused = true
                 expandedDirectoryIds[id] = !(expandedDirectoryIds[id] ?? true)
             }
             .contextMenu {
@@ -545,19 +540,19 @@ private struct ContentView: View {
             }
 
         case let .file(id: id, depth: depth, file: file):
-            HStack(spacing: 6) {
-                Spacer().frame(width: CGFloat(depth) * 14)
+            HStack(spacing: 5) {
+                Spacer().frame(width: CGFloat(depth) * 12)
 
                 if let icon = mdFileIcon {
                     Image(nsImage: icon)
                         .resizable()
-                        .frame(width: 14, height: 14)
+                        .frame(width: 13, height: 13)
                 } else {
                     Image(systemName: "doc.plaintext")
                 }
 
                 Text(file.name)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12))
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
@@ -565,10 +560,8 @@ private struct ContentView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 selectFile(file)
-                treeFocused = true
             }
-            .padding(.vertical, 2)
-            .background((selectedTreeItemId == id ? Color.accentColor.opacity(0.16) : Color.clear))
+            .padding(.vertical, 1)
             .contextMenu {
                 Button("在 Finder 中显示") {
                     Task { await revealTarget(.file(file)) }
@@ -613,48 +606,6 @@ private struct ContentView: View {
 
         guard nextIndex >= 0, nextIndex < visibleFileItems.count else { return }
         selectFile(visibleFileItems[nextIndex].file)
-    }
-
-    private struct TreeFocusCaptureView: NSViewRepresentable {
-        let isActive: Bool
-        let onMove: (MoveCommandDirection) -> Void
-
-        func makeNSView(context: Context) -> FocusCaptureView {
-            let view = FocusCaptureView()
-            view.onMove = onMove
-            view.focusRingType = .none
-            return view
-        }
-
-        func updateNSView(_ nsView: FocusCaptureView, context: Context) {
-            nsView.onMove = onMove
-
-            guard isActive, let window = nsView.window else { return }
-            window.makeFirstResponder(nsView)
-        }
-
-        final class FocusCaptureView: NSView {
-            var onMove: ((MoveCommandDirection) -> Void)?
-
-            override var acceptsFirstResponder: Bool {
-                true
-            }
-
-            override var canBecomeKeyView: Bool {
-                true
-            }
-
-            override func keyDown(with event: NSEvent) {
-                switch event.keyCode {
-                case 126:
-                    onMove?(.up)
-                case 125:
-                    onMove?(.down)
-                default:
-                    super.keyDown(with: event)
-                }
-            }
-        }
     }
 
     private func updateTreeExpansion() {

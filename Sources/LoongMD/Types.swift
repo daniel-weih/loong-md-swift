@@ -77,6 +77,7 @@ struct MdListItem: Hashable {
     let text: String
     let indent: Int
     let checked: Bool?
+    let ordinal: Int?
 }
 
 struct MdInlineSpan: Equatable {

@@ -336,7 +336,6 @@ private struct MarkdownInlineText: View {
 
     var body: some View {
         let spans = parseInline(text)
-        let normalizedSearchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let searchableSpans = {
             var offset = initialMatchOffset
             var items: [(MdInlineSpan, [SearchSegment])] = []
@@ -351,54 +350,11 @@ private struct MarkdownInlineText: View {
             return items
         }()
 
-        Group {
-            if spans.allSatisfy({ $0.style.link == nil }) {
-                if normalizedSearchText.isEmpty {
-                    mergedInlineText(spans)
-                        .textSelection(.enabled)
-                } else {
-                    Text(highlightedAttributedText(searchableSpans))
-                        .textSelection(.enabled)
-                }
-            } else {
-                InlineWrapLayout(itemSpacing: 0, lineSpacing: 0) {
-                    ForEach(Array(searchableSpans.enumerated()), id: \.offset) { _, item in
-                        let span = item.0
-                        let segments = item.1
-                        if let link = span.style.link {
-                            Button(action: { onOpenURL(link) }) {
-                                SearchableInlineText(
-                                    span: span,
-                                    isLink: true,
-                                    blockIndex: blockIndex,
-                                    activeSearchMatch: activeSearchMatch,
-                                    segments: segments
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        } else {
-                            SearchableInlineText(
-                                span: span,
-                                isLink: false,
-                                blockIndex: blockIndex,
-                                activeSearchMatch: activeSearchMatch,
-                                segments: segments
-                            )
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
+        Text(attributedText(searchableSpans))
+            .textSelection(.enabled)
     }
 
-    private func mergedInlineText(_ spans: [MdInlineSpan]) -> Text {
-        spans.reduce(Text(""), { partial, span in
-            partial + styledText(span)
-        })
-    }
-
-    private func highlightedAttributedText(
+    private func attributedText(
         _ searchableSpans: [(MdInlineSpan, [SearchSegment])]
     ) -> AttributedString {
         var result = AttributedString()
@@ -422,6 +378,17 @@ private struct MarkdownInlineText: View {
                 if span.style.code {
                     part.font = .system(.body, design: .monospaced)
                     part.foregroundColor = Color(red: 0.50, green: 0.11, blue: 0.11)
+                    part.backgroundColor = Color(NSColor.textBackgroundColor)
+                }
+
+                if span.style.strikethrough {
+                    part.strikethroughStyle = .single
+                }
+
+                if let link = span.style.link {
+                    part.link = normalizedOpenableURL(link)
+                    part.foregroundColor = .blue
+                    part.underlineStyle = .single
                 }
 
                 if segment.isMatch {
@@ -436,25 +403,22 @@ private struct MarkdownInlineText: View {
         return result
     }
 
-    private func styledText(_ span: MdInlineSpan) -> Text {
-        var piece = Text(span.text)
+    private func normalizedOpenableURL(_ raw: String) -> URL? {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty { return nil }
 
-        if span.style.bold {
-            piece = piece.bold()
-        }
-        if span.style.italic {
-            piece = piece.italic()
-        }
-        if span.style.strikethrough {
-            piece = piece.strikethrough()
-        }
-        if span.style.code {
-            piece = piece
-                .font(.system(.body, design: .monospaced))
-                .foregroundColor(Color(red: 0.50, green: 0.11, blue: 0.11))
+        let hasScheme = normalized.contains("://") ||
+            normalized.hasPrefix("mailto:") ||
+            normalized.hasPrefix("tel:")
+        let candidates = hasScheme ? [normalized] : [normalized, "https://\(normalized)"]
+
+        for candidate in candidates {
+            if let url = URL(string: candidate) {
+                return url
+            }
         }
 
-        return piece
+        return nil
     }
 }
 
@@ -772,9 +736,14 @@ private struct MarkdownList: View {
                 var offset = 0
                 return rendered.map { renderedItem in
                     let item = renderedItem.item
+                    let displayText = normalizedListItemText(item.text)
                     let currentOffset = offset
-                    offset += countMatches(in: item.text, query: normalizedQuery)
-                    return (item: item, prefix: renderedItem.prefix, startOffset: currentOffset)
+                    offset += countMatches(in: displayText, query: normalizedQuery)
+                    return (
+                        item: MdListItem(text: displayText, indent: item.indent, checked: item.checked, ordinal: item.ordinal),
+                        prefix: renderedItem.prefix,
+                        startOffset: currentOffset
+                    )
                 }
             }()
 
@@ -822,8 +791,10 @@ private struct MarkdownList: View {
                 }
 
                 let next = (counters[item.indent] ?? 0) + 1
-                counters[item.indent] = next
-                prefix = "\(next)."
+                let explicit = item.ordinal
+                let current = explicit ?? next
+                counters[item.indent] = current
+                prefix = "\(current)."
             } else if item.checked == true {
                 prefix = "☑"
             } else if item.checked == false {
@@ -849,6 +820,24 @@ private struct MarkdownList: View {
         }
 
         return 6
+    }
+
+    private func normalizedListItemText(_ text: String) -> String {
+        let collapsedLines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        return collapsedLines
+            .replacingOccurrences(of: " ：", with: "：")
+            .replacingOccurrences(of: " :", with: ":")
+            .replacingOccurrences(of: " ，", with: "，")
+            .replacingOccurrences(of: " 。", with: "。")
+            .replacingOccurrences(of: " ；", with: "；")
+            .replacingOccurrences(of: " 、", with: "、")
+            .replacingOccurrences(of: " ）", with: "）")
+            .replacingOccurrences(of: " )", with: ")")
     }
 }
 

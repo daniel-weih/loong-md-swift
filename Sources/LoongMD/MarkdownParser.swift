@@ -13,6 +13,7 @@ private struct MutableListItem {
     var text: String
     let indent: Int
     let checked: Bool?
+    let ordinal: Int?
 }
 
 private struct LinkMatch {
@@ -33,6 +34,7 @@ private let htmlImgAltRegex = try! NSRegularExpression(pattern: "(?is)\\balt\\s*
 private let htmlImgWidthRegex = try! NSRegularExpression(pattern: "(?is)\\bwidth\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
 private let htmlImgHeightRegex = try! NSRegularExpression(pattern: "(?is)\\bheight\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
 private let tableSeparatorCellRegex = try! NSRegularExpression(pattern: "^:?-{3,}:?$")
+private let leadingPunctuationScalars = CharacterSet(charactersIn: "，。；：、！？,.!?;:)]}")
 
 func parseMarkdown(_ markdown: String) -> [MdBlock] {
     if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -47,6 +49,7 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
     var codeBuffer: [String] = []
     var listBuffer: [MutableListItem] = []
     var currentListKind: ListKind?
+    var listHasPendingBlankLine = false
     var inCodeBlock = false
     var codeLanguage: String?
 
@@ -73,7 +76,12 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         }
 
         let items = listBuffer.map {
-            MdListItem(text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines), indent: $0.indent, checked: $0.checked)
+            MdListItem(
+                text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                indent: $0.indent,
+                checked: $0.checked,
+                ordinal: $0.ordinal
+            )
         }
 
         switch kind {
@@ -85,6 +93,7 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
 
         listBuffer.removeAll(keepingCapacity: false)
         currentListKind = nil
+        listHasPendingBlankLine = false
     }
 
     func flushCode() {
@@ -126,12 +135,19 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         if trimmed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             flushParagraph()
             flushQuote()
-            flushList()
+            if currentListKind != nil {
+                listHasPendingBlankLine = true
+            } else {
+                flushList()
+            }
             continue
         }
 
         if let quoteMatch = fullMatch(quoteRegex, in: trimmed),
            let quoteText = capture(quoteMatch, in: trimmed, at: 1) {
+            if listHasPendingBlankLine {
+                flushList()
+            }
             flushParagraph()
             flushList()
             quoteBuffer.append(quoteText)
@@ -141,6 +157,9 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         }
 
         if horizontalRuleRegex.firstMatch(in: trimmed, range: NSRange(location: 0, length: trimmed.utf16.count)) != nil {
+            if listHasPendingBlankLine {
+                flushList()
+            }
             flushParagraph()
             flushList()
             blocks.append(.horizontalRule)
@@ -150,6 +169,9 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         if let headingMatch = fullMatch(headingRegex, in: trimmed),
            let marker = capture(headingMatch, in: trimmed, at: 1),
            let text = capture(headingMatch, in: trimmed, at: 2) {
+            if listHasPendingBlankLine {
+                flushList()
+            }
             flushParagraph()
             flushList()
             blocks.append(.heading(level: marker.count, text: text))
@@ -157,6 +179,9 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         }
 
         if let image = parseStandaloneImage(trimmed) {
+            if listHasPendingBlankLine {
+                flushList()
+            }
             flushParagraph()
             flushQuote()
             flushList()
@@ -165,6 +190,9 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         }
 
         if let htmlImage = parseStandaloneHtmlImage(trimmed) {
+            if listHasPendingBlankLine {
+                flushList()
+            }
             flushParagraph()
             flushQuote()
             flushList()
@@ -173,6 +201,9 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
         }
 
         if let tableCells = parseTableRow(trimmed) {
+            if listHasPendingBlankLine {
+                flushList()
+            }
             flushParagraph()
             flushQuote()
             flushList()
@@ -194,11 +225,13 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
 
             let parsedTask = parseTaskList(text)
             let indent = spaces.count / 2
-            listBuffer.append(MutableListItem(text: parsedTask.text, indent: indent, checked: parsedTask.checked))
+            listHasPendingBlankLine = false
+            listBuffer.append(MutableListItem(text: parsedTask.text, indent: indent, checked: parsedTask.checked, ordinal: nil))
             continue
         }
 
         if let orderedMatch = fullMatch(orderedListRegex, in: trimmed),
+           let ordinalText = capture(orderedMatch, in: trimmed, at: 2),
            let spaces = capture(orderedMatch, in: trimmed, at: 1),
            let text = capture(orderedMatch, in: trimmed, at: 3) {
             flushParagraph()
@@ -210,7 +243,15 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
 
             let parsedTask = parseTaskList(text)
             let indent = spaces.count / 2
-            listBuffer.append(MutableListItem(text: parsedTask.text, indent: indent, checked: parsedTask.checked))
+            listHasPendingBlankLine = false
+            listBuffer.append(
+                MutableListItem(
+                    text: parsedTask.text,
+                    indent: indent,
+                    checked: parsedTask.checked,
+                    ordinal: Int(ordinalText)
+                )
+            )
             continue
         }
 
@@ -218,7 +259,8 @@ func parseMarkdown(_ markdown: String) -> [MdBlock] {
             let continuation = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if !continuation.isEmpty, !listBuffer.isEmpty {
                 let last = listBuffer.count - 1
-                listBuffer[last].text += "\n" + continuation
+                listBuffer[last].text = mergeSoftWrappedText(listBuffer[last].text, continuation)
+                listHasPendingBlankLine = false
                 continue
             }
         }
@@ -245,6 +287,27 @@ func parseInline(_ text: String) -> [MdInlineSpan] {
         return []
     }
     return mergeAdjacentSpans(parseInlineInternal(Array(text), style: MdInlineStyle()))
+}
+
+private func mergeSoftWrappedText(_ existing: String, _ continuation: String) -> String {
+    if existing.isEmpty { return continuation }
+    if continuation.isEmpty { return existing }
+
+    let trimmedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedContinuation = continuation.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard !trimmedExisting.isEmpty else { return trimmedContinuation }
+    guard !trimmedContinuation.isEmpty else { return trimmedExisting }
+
+    if trimmedContinuation.unicodeScalars.first.map(leadingPunctuationScalars.contains) == true {
+        return trimmedExisting + trimmedContinuation
+    }
+
+    if let last = trimmedExisting.last, last == ":" || last == "：" {
+        return trimmedExisting + " " + trimmedContinuation
+    }
+
+    return trimmedExisting + " " + trimmedContinuation
 }
 
 private func parseInlineInternal(_ chars: [Character], style: MdInlineStyle) -> [MdInlineSpan] {
