@@ -69,8 +69,12 @@ private struct ContentView: View {
     @State private var selectedTreeItemId: String?
     @State private var isSearchPanelVisible = false
     @State private var searchKeyword = ""
+    @State private var appliedSearchKeyword = ""
+    @State private var searchMatchResults: [SearchMatchLocation] = []
+    @State private var searchPending = false
     @State private var activeSearchMatchIndex = 0
     @State private var fileSortOption = ContentView.loadSavedFileSortOption()
+    @State private var searchTask: Task<Void, Never>?
     @State private var watchTask: Task<Void, Never>?
     @State private var escapeMonitor: Any?
     @FocusState private var treeFocused: Bool
@@ -107,30 +111,7 @@ private struct ContentView: View {
 
     private var activeSearchKeyword: String {
         guard isSearchPanelVisible else { return "" }
-        return normalizedSearchKeyword
-    }
-
-    private var searchMatchResults: [SearchMatchLocation] {
-        let keyword = activeSearchKeyword
-        guard !keyword.isEmpty else { return [] }
-        guard !searchableText.isEmpty else { return [] }
-
-        let blocks = parseMarkdown(searchableText)
-        var results: [SearchMatchLocation] = []
-
-        for blockIndex in blocks.indices {
-            let block = blocks[blockIndex]
-            let blockText = searchableText(for: block)
-            let matches = countMatches(in: blockText, keyword: keyword)
-            if matches > 0 {
-                for occurrenceIndex in 0..<matches {
-                    results.append(
-                        SearchMatchLocation(blockIndex: blockIndex, occurrenceIndex: occurrenceIndex)
-                    )
-                }
-            }
-        }
-        return results
+        return appliedSearchKeyword
     }
 
     private var activeSearchMatch: SearchMatchLocation? {
@@ -144,6 +125,9 @@ private struct ContentView: View {
         guard isSearchPanelVisible else { return "" }
         if normalizedSearchKeyword.isEmpty {
             return "输入关键词后开始搜索"
+        }
+        if searchPending {
+            return "搜索中…"
         }
         if searchMatchResults.isEmpty {
             return "未找到 \"\(normalizedSearchKeyword)\""
@@ -179,6 +163,8 @@ private struct ContentView: View {
             }
         }
         .onDisappear {
+            searchTask?.cancel()
+            searchTask = nil
             watchTask?.cancel()
             watchTask = nil
             if let escapeMonitor {
@@ -193,6 +179,7 @@ private struct ContentView: View {
         }
         .onChange(of: searchKeyword) { _ in
             activeSearchMatchIndex = 0
+            scheduleSearchUpdate(debounce: true)
         }
         .onChange(of: searchMatchResults.count) { count in
             if count == 0 {
@@ -204,7 +191,29 @@ private struct ContentView: View {
         .onChange(of: selectedFile?.id) { id in
             if id == nil {
                 hideSearchPanel()
+            } else if isSearchPanelVisible {
+                scheduleSearchUpdate(debounce: false)
             }
+        }
+        .onChange(of: markdownText) { _ in
+            if !isEditing {
+                scheduleSearchUpdate(debounce: false)
+            }
+        }
+        .onChange(of: editingText) { _ in
+            if isEditing {
+                scheduleSearchUpdate(debounce: false)
+            }
+        }
+        .onChange(of: isSearchPanelVisible) { visible in
+            if visible {
+                scheduleSearchUpdate(debounce: false)
+            } else {
+                resetSearchState()
+            }
+        }
+        .onChange(of: isEditing) { _ in
+            scheduleSearchUpdate(debounce: false)
         }
         .onChange(of: fileSortOption) { next in
             UserDefaults.standard.set(next.rawValue, forKey: SidebarPrefs.fileSortOptionKey)
@@ -800,6 +809,7 @@ private struct ContentView: View {
             return
         }
         isSearchPanelVisible = true
+        scheduleSearchUpdate(debounce: false)
         DispatchQueue.main.async {
             searchFieldFocused = true
         }
@@ -808,6 +818,88 @@ private struct ContentView: View {
     private func hideSearchPanel() {
         isSearchPanelVisible = false
         searchFieldFocused = false
+        resetSearchState()
+    }
+
+    private func scheduleSearchUpdate(debounce: Bool) {
+        searchTask?.cancel()
+
+        guard isSearchPanelVisible else {
+            resetSearchState()
+            return
+        }
+
+        let keyword = normalizedSearchKeyword
+        let text = searchableText
+
+        guard !keyword.isEmpty, !text.isEmpty else {
+            appliedSearchKeyword = ""
+            searchMatchResults = []
+            searchPending = false
+            activeSearchMatchIndex = 0
+            return
+        }
+
+        searchPending = true
+
+        searchTask = Task {
+            if debounce {
+                try? await Task.sleep(nanoseconds: 180_000_000)
+            }
+            if Task.isCancelled { return }
+
+            let results = computeSearchMatches(in: text, keyword: keyword)
+            if Task.isCancelled { return }
+
+            await MainActor.run {
+                guard isSearchPanelVisible,
+                      normalizedSearchKeyword == keyword,
+                      searchableText == text else {
+                    return
+                }
+
+                appliedSearchKeyword = keyword
+                searchMatchResults = results
+                searchPending = false
+
+                if results.isEmpty || activeSearchMatchIndex >= results.count {
+                    activeSearchMatchIndex = 0
+                }
+            }
+        }
+    }
+
+    private func resetSearchState() {
+        searchTask?.cancel()
+        searchTask = nil
+        appliedSearchKeyword = ""
+        searchMatchResults = []
+        searchPending = false
+        activeSearchMatchIndex = 0
+    }
+
+    private func computeSearchMatches(in text: String, keyword: String) -> [SearchMatchLocation] {
+        let query = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        guard !text.isEmpty else { return [] }
+
+        let blocks = parseMarkdown(text)
+        var results: [SearchMatchLocation] = []
+
+        for blockIndex in blocks.indices {
+            let block = blocks[blockIndex]
+            let blockText = searchableText(for: block)
+            let matches = countMatches(in: blockText, keyword: query)
+            if matches > 0 {
+                for occurrenceIndex in 0..<matches {
+                    results.append(
+                        SearchMatchLocation(blockIndex: blockIndex, occurrenceIndex: occurrenceIndex)
+                    )
+                }
+            }
+        }
+
+        return results
     }
 
     private func goToNextSearchMatch() {

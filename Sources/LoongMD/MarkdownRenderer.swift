@@ -1,6 +1,73 @@
 import AppKit
 import SwiftUI
 
+private struct InlineWrapLayout: Layout {
+    let itemSpacing: CGFloat
+    let lineSpacing: CGFloat
+
+    init(itemSpacing: CGFloat = 0, lineSpacing: CGFloat = 0) {
+        self.itemSpacing = itemSpacing
+        self.lineSpacing = lineSpacing
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let maxWidth = proposal.width ?? .greatestFiniteMagnitude
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var contentWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: proposal.height))
+            if currentX > 0, currentX + size.width > maxWidth {
+                contentWidth = max(contentWidth, currentX - itemSpacing)
+                currentX = 0
+                currentY += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+
+            currentX += size.width + itemSpacing
+            lineHeight = max(lineHeight, size.height)
+            contentWidth = max(contentWidth, currentX - itemSpacing)
+        }
+
+        return CGSize(width: contentWidth, height: currentY + lineHeight)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        var currentX = bounds.minX
+        var currentY = bounds.minY
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: proposal.height))
+            if currentX > bounds.minX, currentX + size.width > bounds.maxX {
+                currentX = bounds.minX
+                currentY += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+
+            subview.place(
+                at: CGPoint(x: currentX, y: currentY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: size.width, height: size.height)
+            )
+
+            currentX += size.width + itemSpacing
+            lineHeight = max(lineHeight, size.height)
+        }
+    }
+}
+
 struct MarkdownRenderView: View {
     let markdownText: String
     let markdownFilePath: String?
@@ -34,12 +101,12 @@ struct MarkdownRenderView: View {
             }
             .onAppear {
                 guard let activeSearchMatch else { return }
-                proxy.scrollTo(matchAnchorID(blockIndex: activeSearchMatch.blockIndex, occurrenceIndex: activeSearchMatch.occurrenceIndex), anchor: .center)
+                proxy.scrollTo(blockID(activeSearchMatch.blockIndex), anchor: .center)
             }
             .onChange(of: activeSearchMatch) { match in
                 guard let match else { return }
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    proxy.scrollTo(matchAnchorID(blockIndex: match.blockIndex, occurrenceIndex: match.occurrenceIndex), anchor: .center)
+                    proxy.scrollTo(blockID(match.blockIndex), anchor: .center)
                 }
             }
         }
@@ -285,11 +352,16 @@ private struct MarkdownInlineText: View {
         }()
 
         Group {
-            if normalizedSearchText.isEmpty && spans.allSatisfy({ $0.style.link == nil }) {
-                mergedInlineText(spans)
-                    .textSelection(.enabled)
+            if spans.allSatisfy({ $0.style.link == nil }) {
+                if normalizedSearchText.isEmpty {
+                    mergedInlineText(spans)
+                        .textSelection(.enabled)
+                } else {
+                    Text(highlightedAttributedText(searchableSpans))
+                        .textSelection(.enabled)
+                }
             } else {
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                InlineWrapLayout(itemSpacing: 0, lineSpacing: 0) {
                     ForEach(Array(searchableSpans.enumerated()), id: \.offset) { _, item in
                         let span = item.0
                         let segments = item.1
@@ -315,6 +387,7 @@ private struct MarkdownInlineText: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -323,6 +396,44 @@ private struct MarkdownInlineText: View {
         spans.reduce(Text(""), { partial, span in
             partial + styledText(span)
         })
+    }
+
+    private func highlightedAttributedText(
+        _ searchableSpans: [(MdInlineSpan, [SearchSegment])]
+    ) -> AttributedString {
+        var result = AttributedString()
+        let activeMatchIndex = activeSearchMatch?.blockIndex == blockIndex ? activeSearchMatch?.occurrenceIndex : nil
+
+        for item in searchableSpans {
+            let span = item.0
+            let segments = item.1
+
+            for segment in segments where !segment.text.isEmpty {
+                var part = AttributedString(segment.text)
+
+                if span.style.bold && span.style.italic {
+                    part.inlinePresentationIntent = [.stronglyEmphasized, .emphasized]
+                } else if span.style.bold {
+                    part.inlinePresentationIntent = .stronglyEmphasized
+                } else if span.style.italic {
+                    part.inlinePresentationIntent = .emphasized
+                }
+
+                if span.style.code {
+                    part.font = .system(.body, design: .monospaced)
+                    part.foregroundColor = Color(red: 0.50, green: 0.11, blue: 0.11)
+                }
+
+                if segment.isMatch {
+                    let isActive = activeMatchIndex == segment.matchIndex
+                    part.backgroundColor = isActive ? Color.orange.opacity(0.45) : Color.yellow.opacity(0.45)
+                }
+
+                result += part
+            }
+        }
+
+        return result
     }
 
     private func styledText(_ span: MdInlineSpan) -> Text {
@@ -358,7 +469,7 @@ private struct SearchableInlineText: View {
         let pieces = segments
         let activeMatchIndex = activeSearchMatch?.blockIndex == blockIndex ? activeSearchMatch?.occurrenceIndex : nil
 
-        HStack(spacing: 0) {
+        InlineWrapLayout(itemSpacing: 0, lineSpacing: 0) {
             ForEach(Array(pieces.enumerated()), id: \.offset) { _, piece in
                 if piece.text.isEmpty {
                     EmptyView()
@@ -384,6 +495,7 @@ private struct SearchableInlineText: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func styledText(for content: String) -> AnyView {
@@ -435,7 +547,7 @@ private struct SearchableText: View {
     var body: some View {
         let activeMatchIndex = activeSearchMatch?.blockIndex == blockIndex ? activeSearchMatch?.occurrenceIndex : nil
 
-        HStack(spacing: 0) {
+        InlineWrapLayout(itemSpacing: 0, lineSpacing: 0) {
             ForEach(Array(searchSegments(text: text, query: searchText).enumerated()), id: \.offset) { _, piece in
                 if piece.text.isEmpty {
                     EmptyView()
@@ -460,6 +572,7 @@ private struct SearchableText: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
