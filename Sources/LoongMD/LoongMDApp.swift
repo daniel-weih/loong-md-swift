@@ -273,9 +273,47 @@ private struct ContentView: View {
                         }
                     }
                 } label: {
-                    Label("排序", systemImage: "arrow.up.arrow.down")
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
                 }
+                .frame(width: 36, height: 30)
+                .foregroundStyle(.primary)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .menuStyle(.borderlessButton)
                 .help("当前排序: \(fileSortOption.shortTitle)")
+
+                Button {
+                    openSearchPanel()
+                } label: {
+                    sidebarToolIconLabel(width: 30) {
+                        Image(systemName: "magnifyingglass")
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("搜索（Command+F）")
+                .disabled(selectedFile == nil)
+
+                Button {
+                    Task {
+                        await reloadFiles(preferredSelectedId: selectedFile?.id)
+                        startFileWatcher()
+                    }
+                } label: {
+                    sidebarToolIconLabel(width: 30) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("刷新目录")
+                .disabled(loading)
             }
 
             Text(dataSource.rootDescription)
@@ -393,6 +431,24 @@ private struct ContentView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func sidebarToolIconLabel<Content: View>(
+        width: CGFloat,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(width: width, height: 30)
+            .foregroundStyle(.primary)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private static func loadSavedFileSortOption() -> FileSortOption {
