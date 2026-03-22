@@ -111,12 +111,12 @@ enum TreeNode: Hashable {
 }
 
 enum TreeListItem: Hashable, Identifiable {
-    case directory(id: String, name: String, depth: Int, expanded: Bool)
+    case directory(id: String, name: String, depth: Int, expanded: Bool, fileCount: Int)
     case file(id: String, depth: Int, file: MarkdownFile)
 
     var id: String {
         switch self {
-        case .directory(let id, _, _, _):
+        case .directory(let id, _, _, _, _):
             return id
         case .file(let id, _, _):
             return id

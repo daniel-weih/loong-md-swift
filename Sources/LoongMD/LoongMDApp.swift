@@ -3,6 +3,7 @@ import SwiftUI
 
 private enum SidebarPrefs {
     static let fileSortOptionKey = "com.loongmd.fileSortOption"
+    static let sidebarWidthKey = "com.loongmd.sidebarWidth"
 }
 
 private final class SearchShortcutState: ObservableObject {
@@ -47,7 +48,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private struct TrashUndoRecord {
+    let file: MarkdownFile
+    let trashedPath: String
+}
+
 private struct ContentView: View {
+    private static let defaultSidebarWidth: CGFloat = 320
+    private static let minSidebarWidth: CGFloat = 220
+    private static let maxSidebarWidth: CGFloat = 520
+
     @EnvironmentObject private var searchShortcutState: SearchShortcutState
     @StateObject private var windowStateManager = WindowStateManager()
     private let dataSource = DesktopMarkdownDataSource()
@@ -73,11 +83,21 @@ private struct ContentView: View {
     @State private var searchMatchResults: [SearchMatchLocation] = []
     @State private var searchPending = false
     @State private var activeSearchMatchIndex = 0
+    @State private var trashUndoStack: [TrashUndoRecord] = []
+    @State private var sidebarWidth = ContentView.loadSavedSidebarWidth()
+    @State private var sidebarWidthAtDragStart: CGFloat?
+    @State private var isSidebarHandleHovered = false
+    @State private var isSidebarResizing = false
     @State private var fileSortOption = ContentView.loadSavedFileSortOption()
     @State private var searchTask: Task<Void, Never>?
     @State private var watchTask: Task<Void, Never>?
     @State private var escapeMonitor: Any?
     @FocusState private var searchFieldFocused: Bool
+
+    private let treeListLeadingCompensation: CGFloat = -10
+    private let treeDepthIndentWidth: CGFloat = 6
+    private let treeFileIconAlignmentOffset: CGFloat = 10
+    private let sidebarResizeHandleWidth: CGFloat = 10
 
     private var treeNodes: [TreeNode] {
         buildFileTree(files, sortOption: fileSortOption)
@@ -100,8 +120,23 @@ private struct ContentView: View {
         selectedFile.map { "file:\($0.id)" }
     }
 
+    private var selectedTreeFile: MarkdownFile? {
+        guard let selectedTreeItemId,
+              let item = visibleItems.first(where: { $0.id == selectedTreeItemId }),
+              case let .file(_, _, file) = item else {
+            return nil
+        }
+        return file
+    }
+
     private var searchableText: String {
         isEditing ? editingText : markdownText
+    }
+
+    private var documentCharacterCount: Int {
+        searchableText.unicodeScalars.filter { scalar in
+            !CharacterSet.punctuationCharacters.contains(scalar)
+        }.count
     }
 
     private var normalizedSearchKeyword: String {
@@ -135,115 +170,130 @@ private struct ContentView: View {
         return "\(current + 1)/\(searchMatchResults.count)"
     }
 
-    var body: some View {
-        HStack(spacing: 0) {
+    private var mainContent: some View {
+        HStack(alignment: .top, spacing: 0) {
             fileSidebar
-                .frame(width: 320)
-            Divider()
+                .frame(width: sidebarWidth)
+                .frame(maxHeight: .infinity, alignment: .top)
+            sidebarResizeHandle
             editorPane
         }
-        .background(WindowAccessor { window in
-            if let window { windowStateManager.attach(window) }
-        })
-        .frame(minWidth: 1024, minHeight: 720)
-        .onAppear {
-            Task {
-                await bootstrap()
-                startFileWatcher()
-            }
-            if escapeMonitor == nil {
-                escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                    if isSearchPanelVisible && event.keyCode == 53 {
-                        hideSearchPanel()
-                        return nil
+    }
+
+    var body: some View {
+        mainContent
+            .background(WindowAccessor { window in
+                if let window { windowStateManager.attach(window) }
+            })
+            .frame(minWidth: 1024, minHeight: 720)
+            .onAppear {
+                sidebarWidth = clampedSidebarWidth(sidebarWidth)
+                Task {
+                    await bootstrap()
+                    startFileWatcher()
+                }
+                if escapeMonitor == nil {
+                    escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                        if isSearchPanelVisible && event.keyCode == 53 {
+                            hideSearchPanel()
+                            return nil
+                        }
+                        if handleCommandDeleteShortcut(event) {
+                            return nil
+                        }
+                        if handleTrashUndoShortcut(event) {
+                            return nil
+                        }
+                        return event
                     }
-                    return event
                 }
             }
-        }
-        .onDisappear {
-            searchTask?.cancel()
-            searchTask = nil
-            watchTask?.cancel()
-            watchTask = nil
-            if let escapeMonitor {
-                NSEvent.removeMonitor(escapeMonitor)
-                self.escapeMonitor = nil
+            .onDisappear {
+                searchTask?.cancel()
+                searchTask = nil
+                watchTask?.cancel()
+                watchTask = nil
+                if let escapeMonitor {
+                    NSEvent.removeMonitor(escapeMonitor)
+                    self.escapeMonitor = nil
+                }
             }
-        }
-        .onChange(of: searchShortcutState.requestSearch) { shouldOpen in
-            guard shouldOpen else { return }
-            searchShortcutState.consume()
-            openSearchPanel()
-        }
-        .onChange(of: searchKeyword) { _ in
-            activeSearchMatchIndex = 0
-            scheduleSearchUpdate(debounce: true)
-        }
-        .onChange(of: searchMatchResults.count) { count in
-            if count == 0 {
+            .onChange(of: searchShortcutState.requestSearch) { shouldOpen in
+                guard shouldOpen else { return }
+                searchShortcutState.consume()
+                openSearchPanel()
+            }
+            .onChange(of: searchKeyword) { _ in
                 activeSearchMatchIndex = 0
-            } else if activeSearchMatchIndex >= count {
-                activeSearchMatchIndex = 0
+                scheduleSearchUpdate(debounce: true)
             }
-        }
-        .onChange(of: selectedFile?.id) { id in
-            if id == nil {
-                hideSearchPanel()
-            } else if isSearchPanelVisible {
+            .onChange(of: searchMatchResults.count) { count in
+                if count == 0 {
+                    activeSearchMatchIndex = 0
+                } else if activeSearchMatchIndex >= count {
+                    activeSearchMatchIndex = 0
+                }
+            }
+            .onChange(of: selectedFile?.id) { id in
+                if id == nil {
+                    hideSearchPanel()
+                } else if isSearchPanelVisible {
+                    scheduleSearchUpdate(debounce: false)
+                }
+            }
+            .onChange(of: markdownText) { _ in
+                if !isEditing {
+                    scheduleSearchUpdate(debounce: false)
+                }
+            }
+            .onChange(of: editingText) { _ in
+                if isEditing {
+                    scheduleSearchUpdate(debounce: false)
+                }
+            }
+            .onChange(of: isSearchPanelVisible) { visible in
+                if visible {
+                    scheduleSearchUpdate(debounce: false)
+                } else {
+                    resetSearchState()
+                }
+            }
+            .onChange(of: isEditing) { _ in
                 scheduleSearchUpdate(debounce: false)
             }
-        }
-        .onChange(of: markdownText) { _ in
-            if !isEditing {
-                scheduleSearchUpdate(debounce: false)
+            .onChange(of: sidebarWidth) { next in
+                UserDefaults.standard.set(Double(clampedSidebarWidth(next)), forKey: SidebarPrefs.sidebarWidthKey)
             }
-        }
-        .onChange(of: editingText) { _ in
-            if isEditing {
-                scheduleSearchUpdate(debounce: false)
+            .onChange(of: fileSortOption) { next in
+                UserDefaults.standard.set(next.rawValue, forKey: SidebarPrefs.fileSortOptionKey)
             }
-        }
-        .onChange(of: isSearchPanelVisible) { visible in
-            if visible {
-                scheduleSearchUpdate(debounce: false)
-            } else {
-                resetSearchState()
+            .onChange(of: selectedTreeItemId) { id in
+                guard let id else { return }
+                guard let item = visibleItems.first(where: { $0.id == id }) else { return }
+                guard case let .file(_, _, file) = item else { return }
+                guard selectedFile?.id != file.id else { return }
+                selectFile(file)
             }
-        }
-        .onChange(of: isEditing) { _ in
-            scheduleSearchUpdate(debounce: false)
-        }
-        .onChange(of: fileSortOption) { next in
-            UserDefaults.standard.set(next.rawValue, forKey: SidebarPrefs.fileSortOptionKey)
-        }
-        .onChange(of: selectedTreeItemId) { id in
-            guard let id else { return }
-            guard let item = visibleItems.first(where: { $0.id == id }) else { return }
-            guard case let .file(_, _, file) = item else { return }
-            guard selectedFile?.id != file.id else { return }
-            selectFile(file)
-        }
-        .onChange(of: files) { newFiles in
-            updateTreeExpansion()
+            .onChange(of: files) { newFiles in
+                updateTreeExpansion()
 
-            guard let selected = selectedFile else {
-                selectedTreeItemId = nil
-                markdownText = ""
-                editingText = ""
-                hasUnsavedChanges = false
-                return
-            }
+                guard let selected = selectedFile else {
+                    selectedTreeItemId = nil
+                    markdownText = ""
+                    editingText = ""
+                    hasUnsavedChanges = false
+                    return
+                }
 
-            if !newFiles.contains(where: { $0.id == selected.id }) {
-                selectedFile = nil
-                selectedTreeItemId = nil
-                markdownText = ""
-                editingText = ""
-                hasUnsavedChanges = false
-                isEditing = false
+                if !newFiles.contains(where: { $0.id == selected.id }) {
+                    selectedFile = nil
+                    selectedTreeItemId = nil
+                    markdownText = ""
+                    editingText = ""
+                    hasUnsavedChanges = false
+                    isEditing = false
+                }
             }
-        }
     }
 
     private var fileSidebar: some View {
@@ -348,98 +398,111 @@ private struct ContentView: View {
                 ForEach(visibleItems, id: \.id) { item in
                     treeRow(for: item)
                         .tag(item.id)
-                        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 1))
                         .listRowSeparator(.hidden)
                 }
             }
+            .padding(.leading, treeListLeadingCompensation)
             .scrollContentBackground(.hidden)
             .background(Color(nsColor: .textBackgroundColor))
             .environment(\.defaultMinListRowHeight, 22)
             .listStyle(.plain)
             .onMoveCommand(perform: moveTreeSelection)
         }
-        .padding(12)
+        .padding(.horizontal, 2)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private var editorPane: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                if let file = selectedFile {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(file.name)
-                            .font(.system(size: 20, weight: .semibold))
-                            .lineLimit(1)
-
+        ZStack(alignment: .bottomTrailing) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    if let file = selectedFile {
                         Text(file.path)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                    } else {
+                        Text("未选择文件")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Picker("", selection: $isEditing) {
+                        Text("预览").tag(false)
+                        Text("编辑").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 130)
+
+                    Button("保存") {
+                        saveContent()
+                    }
+                    .disabled(selectedFile == nil || !hasUnsavedChanges || saving)
+
+                    if saving { ProgressView().scaleEffect(0.8) }
+                }
+
+                if hasUnsavedChanges {
+                    Text("有未保存修改")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.orange)
+                }
+
+                Divider()
+                if isSearchPanelVisible && selectedFile != nil {
+                    searchPanel
+                }
+
+                if let file = selectedFile {
+                    if isEditing {
+                        SearchableTextEditor(
+                            text: $editingText,
+                            searchText: activeSearchKeyword,
+                            activeMatchIndex: searchMatchResults.isEmpty ? nil : activeSearchMatchIndex
+                        )
+                        .onChange(of: editingText) { next in
+                            hasUnsavedChanges = next != markdownText
+                        }
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                        )
+                    } else {
+                        MarkdownRenderView(
+                            markdownText: markdownText,
+                            markdownFilePath: file.path,
+                            searchText: activeSearchKeyword,
+                            activeSearchMatch: activeSearchMatch
+                        )
                     }
                 } else {
-                    Text("未选择文件")
-                        .font(.system(size: 20, weight: .semibold))
+                    Text("请在左侧选择一个 Markdown 文件")
                         .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-
-                Spacer()
-
-                Picker("", selection: $isEditing) {
-                    Text("预览").tag(false)
-                    Text("编辑").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 130)
-
-                Button("保存") {
-                    saveContent()
-                }
-                .disabled(selectedFile == nil || !hasUnsavedChanges || saving)
-
-                if saving { ProgressView().scaleEffect(0.8) }
             }
 
-            if hasUnsavedChanges {
-                Text("有未保存修改")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.orange)
-            }
-
-            Divider()
-            if isSearchPanelVisible && selectedFile != nil {
-                searchPanel
-            }
-
-            if let file = selectedFile {
-                if isEditing {
-                    SearchableTextEditor(
-                        text: $editingText,
-                        searchText: activeSearchKeyword,
-                        activeMatchIndex: searchMatchResults.isEmpty ? nil : activeSearchMatchIndex
-                    )
-                    .onChange(of: editingText) { next in
-                        hasUnsavedChanges = next != markdownText
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color(NSColor.separatorColor), lineWidth: 1)
-                    )
-                } else {
-                    MarkdownRenderView(
-                        markdownText: markdownText,
-                        markdownFilePath: file.path,
-                        searchText: activeSearchKeyword,
-                        activeSearchMatch: activeSearchMatch
-                    )
-                }
-            } else {
-                Text("请在左侧选择一个 Markdown 文件")
+            if selectedFile != nil {
+                Text("总字数: \(documentCharacterCount)")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.bottom, 12)
+                    .padding(.trailing, 14)
+                    .lineLimit(1)
             }
         }
-        .padding(14)
+        .padding(.leading, 8)
+        .padding(.trailing, 14)
+        .padding(.top, 4)
+        .padding(.bottom, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
 
     private func sidebarToolIconLabel<Content: View>(
         width: CGFloat,
@@ -459,12 +522,74 @@ private struct ContentView: View {
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    private var sidebarResizeHandle: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color.clear)
+
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(isSidebarHandleHovered || isSidebarResizing ? 0.7 : 0.35))
+                .frame(width: isSidebarHandleHovered || isSidebarResizing ? 2 : 1)
+        }
+        .frame(width: sidebarResizeHandleWidth)
+        .frame(maxHeight: .infinity)
+        .background(
+            Color.accentColor.opacity(isSidebarHandleHovered || isSidebarResizing ? 0.08 : 0)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering && !isSidebarHandleHovered {
+                NSCursor.resizeLeftRight.push()
+            } else if !hovering && isSidebarHandleHovered {
+                NSCursor.pop()
+            }
+            isSidebarHandleHovered = hovering
+        }
+        .onDisappear {
+            if isSidebarHandleHovered {
+                NSCursor.pop()
+                isSidebarHandleHovered = false
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if sidebarWidthAtDragStart == nil {
+                        sidebarWidthAtDragStart = sidebarWidth
+                    }
+                    isSidebarResizing = true
+                    let baseWidth = sidebarWidthAtDragStart ?? sidebarWidth
+                    sidebarWidth = clampedSidebarWidth(baseWidth + value.translation.width)
+                }
+                .onEnded { value in
+                    let baseWidth = sidebarWidthAtDragStart ?? sidebarWidth
+                    sidebarWidth = clampedSidebarWidth(baseWidth + value.translation.width)
+                    sidebarWidthAtDragStart = nil
+                    isSidebarResizing = false
+                }
+        )
+        .help("左右拖拽调整目录宽度")
+        .accessibilityLabel("调整目录宽度")
+    }
+
+    private func clampedSidebarWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, Self.minSidebarWidth), Self.maxSidebarWidth)
+    }
+
     private static func loadSavedFileSortOption() -> FileSortOption {
         guard let raw = UserDefaults.standard.string(forKey: SidebarPrefs.fileSortOptionKey),
               let option = FileSortOption(rawValue: raw) else {
             return .modifiedNewest
         }
         return option
+    }
+
+    private static func loadSavedSidebarWidth() -> CGFloat {
+        let savedWidth = UserDefaults.standard.double(forKey: SidebarPrefs.sidebarWidthKey)
+        guard savedWidth > 0 else {
+            return defaultSidebarWidth
+        }
+        return min(max(CGFloat(savedWidth), minSidebarWidth), maxSidebarWidth)
     }
 
     private var searchPanel: some View {
@@ -514,22 +639,32 @@ private struct ContentView: View {
     @ViewBuilder
     private func treeRow(for item: TreeListItem) -> some View {
         switch item {
-        case let .directory(id: id, name: name, depth: depth, expanded: expanded):
+        case let .directory(id: id, name: name, depth: depth, expanded: expanded, fileCount: fileCount):
             HStack(spacing: 5) {
-                Spacer().frame(width: CGFloat(depth) * 12)
+                Spacer().frame(width: CGFloat(depth) * treeDepthIndentWidth)
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.secondary)
-                Image(systemName: expanded ? "folder.open" : "folder")
+                Image(systemName: "folder")
                     .foregroundStyle(.orange)
                 Text(name)
                     .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+                if fileCount > 0 {
+                    Text("[\(fileCount)]")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
                 Spacer(minLength: 0)
             }
             .padding(.vertical, 1)
             .contentShape(Rectangle())
             .onTapGesture {
-                expandedDirectoryIds[id] = !(expandedDirectoryIds[id] ?? true)
+                expandedDirectoryIds[id] = !(expandedDirectoryIds[id] ?? false)
             }
             .contextMenu {
                 Button("在 Finder 中显示") {
@@ -541,7 +676,7 @@ private struct ContentView: View {
 
         case let .file(id: id, depth: depth, file: file):
             HStack(spacing: 5) {
-                Spacer().frame(width: CGFloat(depth) * 12)
+                Spacer().frame(width: CGFloat(depth) * treeDepthIndentWidth + treeFileIconAlignmentOffset)
 
                 if let icon = mdFileIcon {
                     Image(nsImage: icon)
@@ -554,6 +689,8 @@ private struct ContentView: View {
                 Text(file.name)
                     .font(.system(size: 12))
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
 
                 Spacer(minLength: 0)
             }
@@ -608,14 +745,57 @@ private struct ContentView: View {
         selectFile(visibleFileItems[nextIndex].file)
     }
 
+    private func handleCommandDeleteShortcut(_ event: NSEvent) -> Bool {
+        guard event.keyCode == 51 else { return false }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags == [.command] else { return false }
+        guard dataSource.supportsTreeContextActions else { return false }
+        guard !isTextInputFocused(in: event.window) else { return false }
+        guard let file = selectedTreeFile else { return false }
+
+        Task { await moveToTrash(file) }
+        return true
+    }
+
+    private func handleTrashUndoShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags == [.command] else { return false }
+        guard event.charactersIgnoringModifiers?.lowercased() == "z" else { return false }
+        guard !isTextInputFocused(in: event.window) else { return false }
+        guard !trashUndoStack.isEmpty else { return false }
+
+        Task { await undoLastTrash() }
+        return true
+    }
+
+    private func isTextInputFocused(in window: NSWindow?) -> Bool {
+        guard let firstResponder = window?.firstResponder else { return false }
+        return firstResponder is NSTextView || firstResponder is NSTextField
+    }
+
     private func updateTreeExpansion() {
         let directoryIds = Set(collectDirectoryIds(treeNodes))
 
         for id in directoryIds where expandedDirectoryIds[id] == nil {
-            expandedDirectoryIds[id] = true
+            expandedDirectoryIds[id] = false
         }
         for existing in expandedDirectoryIds.keys where !directoryIds.contains(existing) {
             expandedDirectoryIds.removeValue(forKey: existing)
+        }
+    }
+
+    private func expandDirectories(containing file: MarkdownFile) {
+        let parts = file.relativePath
+            .split(separator: "/")
+            .map(String.init)
+
+        guard parts.count > 1 else { return }
+
+        var currentPath = ""
+        for part in parts.dropLast() {
+            currentPath = currentPath.isEmpty ? part : "\(currentPath)/\(part)"
+            expandedDirectoryIds["dir:\(currentPath)"] = true
         }
     }
 
@@ -641,6 +821,7 @@ private struct ContentView: View {
                 hasUnsavedChanges = false
                 isEditing = false
                 selectedTreeItemId = nil
+                dataSource.saveLastSelectedFileId(nil)
                 loading = false
                 return
             }
@@ -676,6 +857,8 @@ private struct ContentView: View {
     @MainActor
     private func loadContent(_ file: MarkdownFile) async {
         errorMessage = nil
+        expandDirectories(containing: file)
+        dataSource.saveLastSelectedFileId(file.id)
 
         do {
             let content = try await dataSource.readMarkdown(file: file)
@@ -878,6 +1061,7 @@ private struct ContentView: View {
         }
 
         selectedTreeItemId = "file:\(file.id)"
+        dataSource.saveLastSelectedFileId(file.id)
 
         Task {
             await loadContent(file)
@@ -894,21 +1078,63 @@ private struct ContentView: View {
         }
     }
 
+    private func preferredSelectionAfterDeleting(_ file: MarkdownFile) -> String? {
+        guard let currentIndex = visibleFileItems.firstIndex(where: { $0.file.id == file.id }) else {
+            return selectedFile?.id
+        }
+
+        let nextIndex = currentIndex + 1
+        if visibleFileItems.indices.contains(nextIndex) {
+            return visibleFileItems[nextIndex].file.id
+        }
+
+        let previousIndex = currentIndex - 1
+        if visibleFileItems.indices.contains(previousIndex) {
+            return visibleFileItems[previousIndex].file.id
+        }
+
+        return nil
+    }
+
     private func moveToTrash(_ file: MarkdownFile) async {
+        let preferredSelectedId = selectedFile?.id == file.id
+            ? preferredSelectionAfterDeleting(file)
+            : selectedFile?.id
+
         do {
-            try await dataSource.moveToTrash(target: .file(file))
+            let trashedURL = try await dataSource.moveToTrash(target: .file(file))
+            trashUndoStack.append(
+                TrashUndoRecord(file: file, trashedPath: trashedURL.path)
+            )
             if selectedFile?.id == file.id {
                 selectedFile = nil
                 markdownText = ""
                 editingText = ""
                 hasUnsavedChanges = false
                 isEditing = false
+                dataSource.saveLastSelectedFileId(nil)
             }
-            await reloadFiles(preferredSelectedId: selectedFile?.id)
+            await reloadFiles(preferredSelectedId: preferredSelectedId)
         } catch {
             await MainActor.run {
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
+        }
+    }
+
+    @MainActor
+    private func undoLastTrash() async {
+        guard let record = trashUndoStack.popLast() else { return }
+
+        do {
+            try await dataSource.restoreFromTrash(
+                originalPath: record.file.path,
+                trashedPath: record.trashedPath
+            )
+            await reloadFiles(preferredSelectedId: record.file.id)
+        } catch {
+            trashUndoStack.append(record)
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 

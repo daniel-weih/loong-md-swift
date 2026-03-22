@@ -96,7 +96,10 @@ struct MarkdownRenderView: View {
                         }
                     }
                 }
-                .padding(12)
+                .padding(.leading, 6)
+                .padding(.trailing, 12)
+                .padding(.top, 0)
+                .padding(.bottom, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onAppear {

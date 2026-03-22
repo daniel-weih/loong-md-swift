@@ -14,7 +14,8 @@ protocol MarkdownDataSource: AnyObject {
     func loadLastSelectedFileId() async -> String?
     func saveLastSelectedFileId(_ fileId: String?)
     func revealInFinder(target: MarkdownTreeTarget) async throws
-    func moveToTrash(target: MarkdownTreeTarget) async throws
+    func moveToTrash(target: MarkdownTreeTarget) async throws -> URL
+    func restoreFromTrash(originalPath: String, trashedPath: String) async throws
     func observeFileTreeChanges() -> AsyncStream<Void>
 }
 
@@ -123,7 +124,7 @@ final class DesktopMarkdownDataSource: MarkdownDataSource {
         }
     }
 
-    func moveToTrash(target: MarkdownTreeTarget) async throws {
+    func moveToTrash(target: MarkdownTreeTarget) async throws -> URL {
         let targetURL = resolveTargetURL(target)
         guard fileManager.fileExists(atPath: targetURL.path) else {
             throw DataSourceError.missingFile(targetURL.path)
@@ -131,6 +132,28 @@ final class DesktopMarkdownDataSource: MarkdownDataSource {
 
         var trashed: NSURL?
         try fileManager.trashItem(at: targetURL, resultingItemURL: &trashed)
+        guard let trashedURL = trashed as URL? else {
+            throw DataSourceError.trashLocationUnavailable(targetURL.path)
+        }
+        return trashedURL
+    }
+
+    func restoreFromTrash(originalPath: String, trashedPath: String) async throws {
+        let originalURL = URL(fileURLWithPath: originalPath)
+        let trashedURL = URL(fileURLWithPath: trashedPath)
+
+        guard fileManager.fileExists(atPath: trashedURL.path) else {
+            throw DataSourceError.missingFile(trashedURL.path)
+        }
+
+        let parentDirectory = originalURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
+
+        guard !fileManager.fileExists(atPath: originalURL.path) else {
+            throw DataSourceError.destinationExists(originalURL.path)
+        }
+
+        try fileManager.moveItem(at: trashedURL, to: originalURL)
     }
 
     func observeFileTreeChanges() -> AsyncStream<Void> {
@@ -232,11 +255,17 @@ final class DesktopMarkdownDataSource: MarkdownDataSource {
 
 private enum DataSourceError: LocalizedError {
     case missingFile(String)
+    case trashLocationUnavailable(String)
+    case destinationExists(String)
 
     var errorDescription: String? {
         switch self {
         case .missingFile(let path):
             return "目标不存在: \(path)"
+        case .trashLocationUnavailable(let path):
+            return "无法确定废纸篓位置: \(path)"
+        case .destinationExists(let path):
+            return "无法恢复，原位置已有同名文件: \(path)"
         }
     }
 }

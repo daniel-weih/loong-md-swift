@@ -112,8 +112,16 @@ func flattenTree(_ nodes: [TreeNode], expandedDirectoryIds: [String: Bool], dept
     for node in nodes {
         switch node {
         case .directory(let directory):
-            let expanded = expandedDirectoryIds[directory.id] ?? true
-            result.append(.directory(id: directory.id, name: directory.name, depth: depth, expanded: expanded))
+            let expanded = expandedDirectoryIds[directory.id] ?? false
+            result.append(
+                .directory(
+                    id: directory.id,
+                    name: directory.name,
+                    depth: depth,
+                    expanded: expanded,
+                    fileCount: totalFileCount(in: directory)
+                )
+            )
 
             if expanded {
                 result.append(contentsOf: flattenTree(
@@ -133,4 +141,10 @@ func flattenTree(_ nodes: [TreeNode], expandedDirectoryIds: [String: Bool], dept
     }
 
     return result
+}
+
+private func totalFileCount(in directory: TreeDirectory) -> Int {
+    return directory.files.count + directory.directories.reduce(0) { total, child in
+        total + totalFileCount(in: child)
+    }
 }
