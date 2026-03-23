@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 
 private enum SidebarPrefs {
@@ -48,6 +49,77 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private final class TextToSpeechController: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+    @Published private(set) var isSpeaking: Bool = false
+    @Published private(set) var isPaused: Bool = false
+
+    private let synthesizer = AVSpeechSynthesizer()
+
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func startSpeaking(_ text: String) {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+
+        if synthesizer.isSpeaking || synthesizer.isPaused {
+            _ = synthesizer.stopSpeaking(at: .immediate)
+        }
+
+        let utterance = AVSpeechUtterance(string: cleaned)
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN") ?? AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        synthesizer.speak(utterance)
+        isSpeaking = true
+        isPaused = false
+    }
+
+    func pauseOrResumeSpeaking() {
+        if isPaused {
+            if synthesizer.continueSpeaking() {
+                isPaused = false
+            }
+        } else {
+            if synthesizer.pauseSpeaking(at: .immediate) {
+                isPaused = true
+            }
+        }
+    }
+
+    func stopSpeaking() {
+        if synthesizer.isSpeaking || synthesizer.isPaused {
+            _ = synthesizer.stopSpeaking(at: .immediate)
+        }
+        isSpeaking = false
+        isPaused = false
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        isSpeaking = true
+        isPaused = false
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        isSpeaking = false
+        isPaused = false
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        isSpeaking = false
+        isPaused = false
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
+        isPaused = true
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
+        isPaused = false
+    }
+}
+
 private struct TrashUndoRecord {
     let file: MarkdownFile
     let trashedPath: String
@@ -60,6 +132,7 @@ private struct ContentView: View {
 
     @EnvironmentObject private var searchShortcutState: SearchShortcutState
     @StateObject private var windowStateManager = WindowStateManager()
+    @StateObject private var speechController = TextToSpeechController()
     private let dataSource = DesktopMarkdownDataSource()
     private let appLogo = Bundle.main.url(forResource: "app_icon", withExtension: "png")
         .flatMap { NSImage(contentsOf: $0) }
@@ -93,6 +166,7 @@ private struct ContentView: View {
     @State private var watchTask: Task<Void, Never>?
     @State private var escapeMonitor: Any?
     @FocusState private var searchFieldFocused: Bool
+    @State private var selectedTextForSpeech = ""
 
     private let treeListLeadingCompensation: CGFloat = -10
     private let treeDepthIndentWidth: CGFloat = 6
@@ -131,6 +205,25 @@ private struct ContentView: View {
 
     private var searchableText: String {
         isEditing ? editingText : markdownText
+    }
+
+    private var speechText: String {
+        if isEditing {
+            let selected = selectedTextForSpeech.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !selected.isEmpty {
+                return selected
+            }
+            return editingText
+        }
+
+        return markdownText
+    }
+
+    private var speechIconName: String {
+        if speechController.isSpeaking {
+            return speechController.isPaused ? "play.fill" : "pause.fill"
+        }
+        return "play.fill"
     }
 
     private var documentCharacterCount: Int {
@@ -213,6 +306,7 @@ private struct ContentView: View {
                 searchTask = nil
                 watchTask?.cancel()
                 watchTask = nil
+                speechController.stopSpeaking()
                 if let escapeMonitor {
                     NSEvent.removeMonitor(escapeMonitor)
                     self.escapeMonitor = nil
@@ -235,6 +329,8 @@ private struct ContentView: View {
                 }
             }
             .onChange(of: selectedFile?.id) { id in
+                selectedTextForSpeech = ""
+                speechController.stopSpeaking()
                 if id == nil {
                     hideSearchPanel()
                 } else if isSearchPanelVisible {
@@ -432,6 +528,32 @@ private struct ContentView: View {
 
                     Spacer()
 
+                    Button {
+                        toggleSpeechPlayback()
+                    } label: {
+                        Image(systemName: speechIconName)
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 30, height: 30)
+                    .help(
+                        speechController.isSpeaking
+                        ? (speechController.isPaused ? "继续播放" : "暂停播放")
+                        : "播放文本"
+                    )
+                    .disabled(selectedFile == nil)
+
+                    Button {
+                        stopSpeechPlayback()
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .frame(width: 30, height: 30)
+                    .help("停止播放")
+                    .disabled(!speechController.isSpeaking && !speechController.isPaused)
+
                     Picker("", selection: $isEditing) {
                         Text("预览").tag(false)
                         Text("编辑").tag(true)
@@ -462,6 +584,7 @@ private struct ContentView: View {
                     if isEditing {
                         SearchableTextEditor(
                             text: $editingText,
+                            selectedText: $selectedTextForSpeech,
                             searchText: activeSearchKeyword,
                             activeMatchIndex: searchMatchResults.isEmpty ? nil : activeSearchMatchIndex
                         )
@@ -818,6 +941,7 @@ private struct ContentView: View {
                 selectedFile = nil
                 markdownText = ""
                 editingText = ""
+                selectedTextForSpeech = ""
                 hasUnsavedChanges = false
                 isEditing = false
                 selectedTreeItemId = nil
@@ -866,6 +990,7 @@ private struct ContentView: View {
             selectedTreeItemId = "file:\(file.id)"
             markdownText = content
             editingText = content
+            selectedTextForSpeech = ""
             hasUnsavedChanges = false
             isEditing = false
         } catch {
@@ -873,6 +998,7 @@ private struct ContentView: View {
             selectedTreeItemId = "file:\(file.id)"
             markdownText = ""
             editingText = ""
+            selectedTextForSpeech = ""
             hasUnsavedChanges = false
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -901,6 +1027,27 @@ private struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func toggleSpeechPlayback() {
+        if speechController.isSpeaking {
+            speechController.pauseOrResumeSpeaking()
+            return
+        }
+
+        let text = speechText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !text.isEmpty else {
+            errorMessage = "当前内容为空，无法播放"
+            return
+        }
+
+        speechController.startSpeaking(text)
+    }
+
+    private func stopSpeechPlayback() {
+        speechController.stopSpeaking()
     }
 
     private func searchableText(for block: MdBlock) -> String {
@@ -1151,6 +1298,7 @@ private struct ContentView: View {
 
 private struct SearchableTextEditor: NSViewRepresentable {
     @Binding var text: String
+    @Binding var selectedText: String
     let searchText: String
     let activeMatchIndex: Int?
     private let fontSize: CGFloat = 14
@@ -1179,6 +1327,7 @@ private struct SearchableTextEditor: NSViewRepresentable {
         textView.string = text
 
         context.coordinator.refreshHighlights(for: textView, activeMatchIndex: activeMatchIndex)
+        context.coordinator.updateSelectedText(for: textView)
 
         let scrollView = NSScrollView()
         scrollView.documentView = textView
@@ -1210,6 +1359,7 @@ private struct SearchableTextEditor: NSViewRepresentable {
             textView.string = text
         }
         context.coordinator.refreshHighlights(for: textView, activeMatchIndex: activeMatchIndex)
+        context.coordinator.updateSelectedText(for: textView)
 
         let maxLength = max(0, text.utf16.count)
         let adjustedLocation = min(selectedRange.location, maxLength)
@@ -1227,7 +1377,24 @@ private struct SearchableTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
+            updateSelectedText(for: textView)
             refreshHighlights(for: textView, activeMatchIndex: parent.activeMatchIndex)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            updateSelectedText(for: textView)
+        }
+
+        func updateSelectedText(for textView: NSTextView) {
+            let range = textView.selectedRange()
+            guard range.length > 0 else {
+                parent.selectedText = ""
+                return
+            }
+
+            let text = textView.string as NSString
+            parent.selectedText = text.substring(with: range)
         }
 
         func refreshHighlights(for textView: NSTextView, activeMatchIndex: Int?) {
