@@ -60,7 +60,7 @@ private final class TextToSpeechController: NSObject, ObservableObject, AVSpeech
         synthesizer.delegate = self
     }
 
-    func startSpeaking(_ text: String) {
+    func startSpeaking(_ text: String, voiceIdentifier: String?) {
         let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { return }
 
@@ -69,7 +69,11 @@ private final class TextToSpeechController: NSObject, ObservableObject, AVSpeech
         }
 
         let utterance = AVSpeechUtterance(string: cleaned)
-        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN") ?? AVSpeechSynthesisVoice(language: "en-US")
+        if let identifier = voiceIdentifier, let selectedVoice = AVSpeechSynthesisVoice(identifier: identifier) {
+            utterance.voice = selectedVoice
+        } else {
+            utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN") ?? AVSpeechSynthesisVoice(language: "en-US")
+        }
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         synthesizer.speak(utterance)
         isSpeaking = true
@@ -129,6 +133,19 @@ private struct ContentView: View {
     private static let defaultSidebarWidth: CGFloat = 320
     private static let minSidebarWidth: CGFloat = 220
     private static let maxSidebarWidth: CGFloat = 520
+    private static let availableSpeechVoices: [AVSpeechSynthesisVoice] = {
+        AVSpeechSynthesisVoice.speechVoices().sorted { lhs, rhs in
+            if lhs.language == rhs.language {
+                return lhs.name < rhs.name
+            }
+            return lhs.language < rhs.language
+        }
+    }()
+    private static let defaultSpeechVoiceIdentifier: String = {
+        AVSpeechSynthesisVoice(language: "zh-CN")?.identifier
+            ?? availableSpeechVoices.first?.identifier
+            ?? ""
+    }()
 
     @EnvironmentObject private var searchShortcutState: SearchShortcutState
     @StateObject private var windowStateManager = WindowStateManager()
@@ -167,6 +184,7 @@ private struct ContentView: View {
     @State private var escapeMonitor: Any?
     @FocusState private var searchFieldFocused: Bool
     @State private var selectedTextForSpeech = ""
+    @State private var selectedSpeechVoiceIdentifier = ContentView.defaultSpeechVoiceIdentifier
 
     private let treeListLeadingCompensation: CGFloat = -10
     private let treeDepthIndentWidth: CGFloat = 6
@@ -226,6 +244,10 @@ private struct ContentView: View {
         return "play.fill"
     }
 
+    private var availableSpeechVoices: [AVSpeechSynthesisVoice] {
+        Self.availableSpeechVoices
+    }
+
     private var documentCharacterCount: Int {
         searchableText.unicodeScalars.filter { scalar in
             !CharacterSet.punctuationCharacters.contains(scalar)
@@ -281,6 +303,9 @@ private struct ContentView: View {
             .frame(minWidth: 1024, minHeight: 720)
             .onAppear {
                 sidebarWidth = clampedSidebarWidth(sidebarWidth)
+                if !availableSpeechVoices.contains(where: { $0.identifier == selectedSpeechVoiceIdentifier }) {
+                    selectedSpeechVoiceIdentifier = availableSpeechVoices.first?.identifier ?? ""
+                }
                 Task {
                     await bootstrap()
                     startFileWatcher()
@@ -527,6 +552,17 @@ private struct ContentView: View {
                     }
 
                     Spacer()
+
+                    Picker("", selection: $selectedSpeechVoiceIdentifier) {
+                        ForEach(availableSpeechVoices, id: \.identifier) { voice in
+                            Text(formattedSpeechVoiceName(voice))
+                                .tag(voice.identifier)
+                        }
+                    }
+                    .frame(minWidth: 200)
+                    .pickerStyle(.menu)
+                    .help("选择语音")
+                    .disabled(availableSpeechVoices.isEmpty)
 
                     Button {
                         toggleSpeechPlayback()
@@ -1043,11 +1079,16 @@ private struct ContentView: View {
             return
         }
 
-        speechController.startSpeaking(text)
+        speechController.startSpeaking(text, voiceIdentifier: selectedSpeechVoiceIdentifier)
     }
 
     private func stopSpeechPlayback() {
         speechController.stopSpeaking()
+    }
+
+    private func formattedSpeechVoiceName(_ voice: AVSpeechSynthesisVoice) -> String {
+        let language = Locale.current.localizedString(forIdentifier: voice.language) ?? voice.language
+        return "\(voice.name) (\(language))"
     }
 
     private func searchableText(for block: MdBlock) -> String {
